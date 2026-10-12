@@ -8,6 +8,8 @@ use Illuminate\Support\Fluent;
 use Illuminate\Support\ServiceProvider;
 use MendesAlexandre\PgAudit\Console\DisableCommand;
 use MendesAlexandre\PgAudit\Console\EnableCommand;
+use MendesAlexandre\PgAudit\Console\InstallCommand;
+use MendesAlexandre\PgAudit\Console\MakeMigrationCommand;
 use MendesAlexandre\PgAudit\Console\PruneCommand;
 use MendesAlexandre\PgAudit\Console\StatusCommand;
 use MendesAlexandre\PgAudit\Console\SyncCommand;
@@ -25,7 +27,7 @@ class PgAuditServiceProvider extends ServiceProvider
         $this->registerBlueprintMacros();
 
         if ($this->app->runningInConsole()) {
-            $this->commands([EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
+            $this->commands([InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
 
             $this->publishes([__DIR__.'/../config/pg-audit.php' => config_path('pg-audit.php')], 'pg-audit-config');
             $this->publishes([
@@ -40,8 +42,8 @@ class PgAuditServiceProvider extends ServiceProvider
      */
     protected function registerBlueprintMacros(): void
     {
-        Blueprint::macro('audit', function (array $except = [], ?bool $truncate = null, ?string $schema = null) {
-            return $this->addCommand('audit', compact('except', 'truncate', 'schema'));
+        Blueprint::macro('audit', function (array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $prefix = null) {
+            return $this->addCommand('audit', compact('except', 'truncate', 'schema', 'prefix'));
         });
 
         Blueprint::macro('dropAudit', function () {
@@ -50,7 +52,7 @@ class PgAuditServiceProvider extends ServiceProvider
 
         PostgresGrammar::macro('compileAudit', function (Blueprint $blueprint, Fluent $command) {
             return app(AuditManager::class)->enableStatements(
-                $this->wrapTable($blueprint), $command->except ?? [], $command->truncate, $command->schema
+                $this->wrapTable($blueprint), $command->except ?? [], $command->truncate, $command->schema, $command->prefix
             );
         });
 

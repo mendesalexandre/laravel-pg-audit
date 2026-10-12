@@ -121,4 +121,58 @@ class AuditTest extends TestCase
         DB::table('posts')->insert(['title' => 'x']);
         $this->assertSame(1, AuditLog::on('pgsql')->count());
     }
+
+    public function test_prefix_creates_log_table_per_audited_table(): void
+    {
+        AuditSchema::up(null, 'audit_vendas');
+        Schema::dropIfExists('orders');
+        Schema::create('orders', function (Blueprint $t) {
+            $t->id();
+            $t->string('status')->default('new');
+            $t->audit(schema: 'audit_vendas', prefix: 'audit_');
+        });
+
+        $id = DB::table('orders')->insertGetId([]);
+        DB::table('orders')->where('id', $id)->update(['status' => 'paid']);
+
+        $rows = AuditLog::inSchema('audit_vendas', null, 'audit_orders')->orderBy('id')->get();
+        $this->assertSame(['I', 'U'], $rows->pluck('action')->all());
+        $this->assertSame(0, AuditLog::inSchema('audit_vendas')->count()); // tabela padrão não recebe
+        $this->assertSame('audit_orders', collect(PgAudit::audited())->firstWhere('table', 'public.orders')['log_table']);
+
+        // trait HasAuditLog resolvendo schema + prefixo
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \MendesAlexandre\PgAudit\Concerns\HasAuditLog;
+
+            protected $table = 'orders';
+
+            protected string $auditSchema = 'audit_vendas';
+
+            protected string $auditPrefix = 'audit_';
+        };
+        $this->assertSame(2, $model->newQuery()->find($id)->auditLogs()->count());
+
+        Schema::dropIfExists('orders');
+        AuditSchema::down(null, 'audit_vendas');
+    }
+
+    public function test_make_migration_commands_generate_files(): void
+    {
+        $dir = database_path('migrations');
+        $before = glob($dir.'/*') ?: [];
+
+        $this->artisan('pg-audit:install', ['--schema' => 'audit_vendas'])->assertSuccessful();
+        $this->artisan('pg-audit:make-migration', ['tables' => ['orders', 'order_items'], '--schema' => 'audit_vendas', '--prefix' => 'audit_', '--except' => ['updated_at']])->assertSuccessful();
+
+        $new = array_diff(glob($dir.'/*') ?: [], $before);
+        $this->assertCount(2, $new);
+        foreach ($new as $file) {
+            $this->assertSame(0, strlen(shell_exec('php -l '.escapeshellarg($file).' 2>&1 | grep -v "^No syntax"') ?? ''));
+            $out[] = file_get_contents($file);
+            unlink($file);
+        }
+        $all = implode("\n", $out);
+        $this->assertStringContainsString("AuditSchema::up(schema: 'audit_vendas')", $all);
+        $this->assertStringContainsString("schema: 'audit_vendas', prefix: 'audit_'", $all);
+    }
 }

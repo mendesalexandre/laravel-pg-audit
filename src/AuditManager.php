@@ -5,6 +5,7 @@ namespace MendesAlexandre\PgAudit;
 use Closure;
 use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Arr;
 use InvalidArgumentException;
 use MendesAlexandre\PgAudit\Database\AuditSchema;
 
@@ -17,26 +18,51 @@ class AuditManager
         return DB::connection($name ?? config('pg-audit.connection'));
     }
 
-    /** SQL (array) para habilitar auditoria numa tabela já qualificada/quoted. */
-    public function enableStatements(string $quotedTable, array $except = [], ?bool $truncate = null, ?string $schema = null): array
+    /**
+     * SQL (array) para habilitar auditoria numa tabela.
+     * $prefix (ou config "table_prefix") cria uma tabela de log própria: prefixo + nome da tabela (ex.: audit_orders).
+     */
+    public function enableStatements(string $quotedTable, array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $prefix = null): array
     {
-        $schema = AuditSchema::q($schema ?? config('pg-audit.schema'));
+        $schemaName = AuditSchema::ident($schema ?? config('pg-audit.schema'));
+        $schema = AuditSchema::q($schemaName);
         $columns = $this->columnList(array_merge(config('pg-audit.global_except', []), $except));
-        $arg = "'".$columns."'";
+        $args = "'".$columns."'";
+        $sql = [];
+
+        $logTable = $this->logTableName($quotedTable, $prefix);
+        if ($logTable !== null) {
+            $sql = AuditSchema::logTableStatements($schema, AuditSchema::q($logTable));
+            $args .= ", '".$logTable."'";
+        }
+
         $row = AuditSchema::q(AuditSchema::TRIGGER_ROW);
         $stm = AuditSchema::q(AuditSchema::TRIGGER_TRUNCATE);
 
-        $sql = [
+        array_push($sql,
             "DROP TRIGGER IF EXISTS {$row} ON {$quotedTable}",
-            "CREATE TRIGGER {$row} AFTER INSERT OR UPDATE OR DELETE ON {$quotedTable} FOR EACH ROW EXECUTE FUNCTION {$schema}.log_changes({$arg})",
+            "CREATE TRIGGER {$row} AFTER INSERT OR UPDATE OR DELETE ON {$quotedTable} FOR EACH ROW EXECUTE FUNCTION {$schema}.log_changes({$args})",
             "DROP TRIGGER IF EXISTS {$stm} ON {$quotedTable}",
-        ];
+        );
 
         if ($truncate ?? config('pg-audit.truncate', true)) {
-            $sql[] = "CREATE TRIGGER {$stm} AFTER TRUNCATE ON {$quotedTable} FOR EACH STATEMENT EXECUTE FUNCTION {$schema}.log_changes({$arg})";
+            $sql[] = "CREATE TRIGGER {$stm} AFTER TRUNCATE ON {$quotedTable} FOR EACH STATEMENT EXECUTE FUNCTION {$schema}.log_changes({$args})";
         }
 
         return $sql;
+    }
+
+    /** Nome da tabela de log própria (prefixo + tabela) ou null para usar a tabela padrão. */
+    protected function logTableName(string $quotedTable, ?string $prefix): ?string
+    {
+        $prefix ??= config('pg-audit.table_prefix');
+        if ($prefix === null || $prefix === '') {
+            return null;
+        }
+
+        $base = trim(Arr::last(explode('.', $quotedTable)), '"');
+
+        return AuditSchema::ident($prefix.$base);
     }
 
     public function disableStatements(string $quotedTable): array
@@ -47,10 +73,10 @@ class AuditManager
         ];
     }
 
-    public function enable(string $table, array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $connection = null): void
+    public function enable(string $table, array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $connection = null, ?string $prefix = null): void
     {
         $db = $this->connection($connection);
-        foreach ($this->enableStatements($this->quoteTable($db, $table), $except, $truncate, $schema) as $sql) {
+        foreach ($this->enableStatements($this->quoteTable($db, $table), $except, $truncate, $schema, $prefix) as $sql) {
             $db->unprepared($sql);
         }
     }
@@ -76,9 +102,9 @@ class AuditManager
         SQL, [AuditSchema::TRIGGER_ROW]);
 
         return array_map(function ($r) {
-            preg_match("/EXECUTE FUNCTION (?:(.+)\\.)?log_changes\\('([^']*)'\\)/", $r->def, $m);
+            preg_match("/EXECUTE FUNCTION (?:(.+)\\.)?log_changes\\('([^']*)'(?:, '([^']*)')?\\)/", $r->def, $m);
 
-            return ['table' => "{$r->schema}.{$r->table}", 'audit_schema' => trim($m[1] ?? '', '"') ?: '(search_path)', 'except' => $m[2] ?? ''];
+            return ['table' => "{$r->schema}.{$r->table}", 'audit_schema' => trim($m[1] ?? '', '"') ?: '(search_path)', 'log_table' => $m[3] ?? config('pg-audit.table'), 'except' => $m[2] ?? ''];
         }, $rows);
     }
 

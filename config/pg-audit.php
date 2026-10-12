@@ -11,6 +11,10 @@ return [
     'schema' => 'audit',
     'table' => 'logged_actions',
 
+    // Prefixo para tabela de log POR tabela auditada (ex.: 'audit_' => audit_orders, audit_order_items).
+    // null = todas usam a tabela única `table` acima.
+    'table_prefix' => null,
+
     // Colunas nunca gravadas no log (aplicado a todas as tabelas auditadas).
     'global_except' => ['password', 'remember_token'],
 

@@ -60,6 +60,36 @@ PgAudit::actingAs($id, $fn, connection: 'tenant');
 O trigger só grava no **mesmo banco** da tabela (limitação do PostgreSQL); "conexão separada" significa instalar o schema de auditoria em cada banco.
 Para o middleware preencher o contexto em outras conexões, liste-as em `context_connections`.
 
+## Uma tabela de log por tabela auditada (prefixo)
+
+Por padrão todas as tabelas gravam em `audit.logged_actions`. Com `prefix`, cada tabela auditada ganha a sua própria
+tabela de log (`prefixo + nome`), criada automaticamente no schema escolhido:
+
+```php
+$t->audit(schema: 'audit_vendas', prefix: 'audit_');   // orders -> audit_vendas.audit_orders
+```
+
+Ou globalmente com `'table_prefix' => 'audit_'` na config. No model, informe onde está o log:
+
+```php
+use HasAuditLog;
+protected string $auditSchema = 'audit_vendas';
+protected string $auditPrefix = 'audit_';   // $order->auditLogs
+```
+
+## Gerando migrations
+
+```bash
+# 1) instala schema + tabela de log + função (use --schema/--table/--connection para algo diferente do padrão)
+php artisan pg-audit:install --schema=audit_vendas
+
+# 2) para tabelas que já existem: gera a migration que liga os triggers
+php artisan pg-audit:make-migration orders order_items --schema=audit_vendas --prefix=audit_ --except=updated_at
+```
+
+Para tabelas novas basta `$t->audit(...)` dentro do `Schema::create`. Os triggers capturam `OLD`/`NEW` sozinhos: você só informa
+as **tabelas** (e, se quiser, colunas a ignorar); `old_values`/`new_values` são preenchidos automaticamente.
+
 ## Quem fez a alteração
 
 Registre o middleware **depois** da autenticação:
