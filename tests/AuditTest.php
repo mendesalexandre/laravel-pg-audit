@@ -64,11 +64,11 @@ class AuditTest extends TestCase
         });
 
         $logs = AuditLog::orderBy('id')->get();
-        $this->assertSame(['I', 'U', 'D'], $logs->pluck('action')->all());
+        $this->assertSame(['I', 'U', 'D'], $logs->pluck('event')->all());
         $this->assertSame(['title' => 'a'], $logs[1]->old_values);
         $this->assertSame(['title' => 'b'], $logs[1]->new_values);
         $this->assertSame('42', $logs[0]->user_id);
-        $this->assertSame('1', $logs[0]->row_pk);
+        $this->assertSame('1', $logs[0]->auditable_id);
         $this->assertArrayNotHasKey('updated_at', $logs[2]->old_values);
     }
 
@@ -78,8 +78,8 @@ class AuditTest extends TestCase
         DB::table('posts')->insert(['title' => 'x']);
         DB::table('posts')->truncate();
 
-        $this->assertNull(AuditLog::where('action', 'I')->first()->user_id);
-        $this->assertSame(1, AuditLog::where('action', 'T')->count());
+        $this->assertNull(AuditLog::where('event', 'I')->first()->user_id);
+        $this->assertSame(1, AuditLog::where('event', 'T')->count());
     }
 
     public function test_status_and_disable(): void
@@ -108,7 +108,7 @@ class AuditTest extends TestCase
 
         $this->assertSame(1, AuditLog::inSchema('audit_fin', null, 'movimentos')->count());
         $this->assertSame(1, AuditLog::count());           // schema padrão só tem o post
-        $this->assertSame('invoices', AuditLog::inSchema('audit_fin', null, 'movimentos')->first()->table_name);
+        $this->assertSame('invoices', AuditLog::inSchema('audit_fin', null, 'movimentos')->first()->auditable_table);
         $this->assertContains('audit_fin', array_column(PgAudit::audited(), 'audit_schema'));
 
         Schema::dropIfExists('invoices');
@@ -136,7 +136,7 @@ class AuditTest extends TestCase
         DB::table('orders')->where('id', $id)->update(['status' => 'paid']);
 
         $rows = AuditLog::inSchema('audit_vendas', null, 'audit_orders')->orderBy('id')->get();
-        $this->assertSame(['I', 'U'], $rows->pluck('action')->all());
+        $this->assertSame(['I', 'U'], $rows->pluck('event')->all());
         $this->assertSame(0, AuditLog::inSchema('audit_vendas')->count()); // tabela padrão não recebe
         $this->assertSame('audit_orders', collect(PgAudit::audited())->firstWhere('table', 'public.orders')['log_table']);
 
@@ -174,5 +174,80 @@ class AuditTest extends TestCase
         $all = implode("\n", $out);
         $this->assertStringContainsString("AuditSchema::up(schema: 'audit_vendas')", $all);
         $this->assertStringContainsString("schema: 'audit_vendas', prefix: 'audit_'", $all);
+    }
+
+    public function test_portuguese_preset_and_single_column_override(): void
+    {
+        AuditSchema::down();
+        config(['pg-audit.locale' => 'pt', 'pg-audit.columns' => ['row_id' => 'registro_id']]);
+        AuditSchema::up();
+        Schema::dropIfExists('posts');
+        Schema::create('posts', function (Blueprint $t) {
+            $t->id();
+            $t->string('title');
+            $t->audit();
+        });
+
+        PgAudit::actingAs(7, function () {
+            DB::table('posts')->insert(['title' => 'a']);
+            DB::table('posts')->update(['title' => 'b']);
+        });
+
+        $cols = collect(DB::select("select column_name from information_schema.columns where table_schema='audit' and table_name='logged_actions'"))->pluck('column_name');
+        $this->assertTrue($cols->contains('registro_id'));
+        $this->assertTrue($cols->contains('evento'));
+        $this->assertFalse($cols->contains('auditable_id'));
+
+        $log = AuditLog::forRecord('posts', 1)->action('U')->first();
+        $this->assertSame('registro_id', \MendesAlexandre\PgAudit\Support\Columns::get('row_id'));
+        $this->assertSame('1', $log->registro_id);
+        $this->assertSame('posts', $log->auditavel_tabela);
+        $this->assertSame(['title' => 'b'], $log->valores_novos);
+        $this->assertSame('7', $log->usuario_id);
+        $this->assertSame('updated', $log->action_name);
+        $this->assertInstanceOf(\Illuminate\Support\Carbon::class, $log->criado_em);
+    }
+
+    public function test_unknown_column_key_is_rejected(): void
+    {
+        config(['pg-audit.columns' => ['nope' => 'x']]);
+        $this->expectException(\InvalidArgumentException::class);
+        \MendesAlexandre\PgAudit\Support\Columns::all();
+    }
+
+    public function test_rename_columns_migration_keeps_history_and_triggers_working(): void
+    {
+        DB::table('posts')->insert(['title' => 'antes']);
+
+        $from = \MendesAlexandre\PgAudit\Support\Columns::for('en');
+        $to = \MendesAlexandre\PgAudit\Support\Columns::for('pt');
+        AuditSchema::renameColumns($from, $to);
+        config(['pg-audit.locale' => 'pt']);
+
+        DB::table('posts')->insert(['title' => 'depois']);
+
+        $logs = AuditLog::orderBy('id')->get();
+        $this->assertCount(2, $logs);                       // histórico preservado
+        $this->assertSame(['I', 'I'], $logs->pluck('evento')->all());
+        $this->assertSame('depois', $logs[1]->valores_novos['title']);
+
+        AuditSchema::renameColumns($to, $from);            // down()
+        config(['pg-audit.locale' => 'en']);
+        $this->assertSame(2, AuditLog::where('event', 'I')->count());
+    }
+
+    public function test_rename_columns_command_generates_valid_migration(): void
+    {
+        $dir = database_path('migrations');
+        $before = glob($dir.'/*') ?: [];
+
+        $this->artisan('pg-audit:rename-columns', ['--from' => 'en', '--to' => 'pt'])->assertSuccessful();
+
+        $new = array_values(array_diff(glob($dir.'/*') ?: [], $before));
+        $this->assertCount(1, $new);
+        $code = file_get_contents($new[0]);
+        unlink($new[0]);
+        $this->assertStringContainsString("'created_at' => 'criado_em'", $code);
+        $this->assertStringContainsString('AuditSchema::renameColumns($this->from, $this->to)', $code);
     }
 }

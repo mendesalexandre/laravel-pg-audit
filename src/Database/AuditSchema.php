@@ -3,6 +3,7 @@
 namespace MendesAlexandre\PgAudit\Database;
 
 use Illuminate\Support\Facades\DB;
+use MendesAlexandre\PgAudit\Support\Columns;
 
 class AuditSchema
 {
@@ -27,6 +28,34 @@ class AuditSchema
     }
 
     /**
+     * Renomeia as colunas de todas as tabelas de log do schema (padrão e por prefixo) de $from para $to
+     * (arrays chave lógica => nome, ver Columns) e recria a função do trigger com os nomes novos.
+     * Triggers existentes continuam valendo.
+     */
+    public static function renameColumns(array $from, array $to, ?string $connection = null, ?string $schema = null, ?string $table = null): void
+    {
+        $db = DB::connection($connection ?? config('pg-audit.connection'));
+        $schemaName = self::ident($schema ?? config('pg-audit.schema'));
+
+        // Tabelas de log = as que têm as colunas de origem de evento e id da linha.
+        $tables = $db->select(<<<'SQL'
+            SELECT table_name FROM information_schema.columns
+             WHERE table_schema = ? AND column_name IN (?, ?)
+             GROUP BY table_name HAVING count(*) = 2
+        SQL, [$schemaName, $from['event'], $from['row_id']]);
+
+        foreach ($tables as $t) {
+            foreach ($from as $key => $old) {
+                if ($old !== ($to[$key] ?? $old)) {
+                    $db->unprepared('ALTER TABLE '.self::q($schemaName).'.'.self::q($t->table_name).' RENAME COLUMN '.self::q($old).' TO '.self::q(self::ident($to[$key])));
+                }
+            }
+        }
+
+        self::createFunction($db, self::q($schemaName), self::q(self::ident($table ?? config('pg-audit.table'))), $to);
+    }
+
+    /**
      * SQL para criar uma tabela de log (idempotente). Recebe nomes já com quote.
      * Usada para a tabela padrão e para as tabelas por prefixo (ex.: audit_orders).
      */
@@ -35,28 +64,30 @@ class AuditSchema
         $raw = trim($quotedTable, '"');
         $idx = fn (string $suffix) => self::q(substr($raw.'_'.$suffix, 0, 63));
 
+        $c = array_map(fn ($n) => self::q($n), Columns::all());
+
         return [
             <<<SQL
             CREATE TABLE IF NOT EXISTS {$quotedSchema}.{$quotedTable} (
-                id             bigserial PRIMARY KEY,
-                schema_name    text        NOT NULL,
-                table_name     text        NOT NULL,
-                row_pk         text,
-                action         char(1)     NOT NULL CHECK (action IN ('I','U','D','T')),
-                old_values     jsonb,
-                new_values     jsonb,
-                user_id        text,
-                ip_address     text,
-                user_agent     text,
-                url            text,
-                db_user        text        NOT NULL DEFAULT session_user,
-                transaction_id bigint      NOT NULL DEFAULT txid_current(),
-                created_at     timestamptz NOT NULL DEFAULT clock_timestamp()
+                {$c['id']}             bigserial PRIMARY KEY,
+                {$c['schema']}         text        NOT NULL,
+                {$c['table']}          text        NOT NULL,
+                {$c['row_id']}         text,
+                {$c['event']}          char(1)     NOT NULL CHECK ({$c['event']} IN ('I','U','D','T')),
+                {$c['old_values']}     jsonb,
+                {$c['new_values']}     jsonb,
+                {$c['user_id']}        text,
+                {$c['ip_address']}     text,
+                {$c['user_agent']}     text,
+                {$c['url']}            text,
+                {$c['db_user']}        text        NOT NULL DEFAULT session_user,
+                {$c['transaction_id']} bigint      NOT NULL DEFAULT txid_current(),
+                {$c['created_at']}     timestamptz NOT NULL DEFAULT clock_timestamp()
             )
             SQL,
-            'CREATE INDEX IF NOT EXISTS '.$idx('row_idx')." ON {$quotedSchema}.{$quotedTable} (schema_name, table_name, row_pk)",
-            'CREATE INDEX IF NOT EXISTS '.$idx('created_idx')." ON {$quotedSchema}.{$quotedTable} (created_at)",
-            'CREATE INDEX IF NOT EXISTS '.$idx('user_idx')." ON {$quotedSchema}.{$quotedTable} (user_id)",
+            'CREATE INDEX IF NOT EXISTS '.$idx('row_idx')." ON {$quotedSchema}.{$quotedTable} ({$c['schema']}, {$c['table']}, {$c['row_id']})",
+            'CREATE INDEX IF NOT EXISTS '.$idx('created_idx')." ON {$quotedSchema}.{$quotedTable} ({$c['created_at']})",
+            'CREATE INDEX IF NOT EXISTS '.$idx('user_idx')." ON {$quotedSchema}.{$quotedTable} ({$c['user_id']})",
         ];
     }
 
@@ -74,9 +105,11 @@ class AuditSchema
      *  - TG_ARGV[1]: (opcional) tabela de log neste schema; vazio = tabela padrão
      * Contexto lido de current_setting('audit.*'), preenchido pelo middleware/PgAudit::actingAs().
      */
-    protected static function createFunction($db, string $schema, string $table): void
+    protected static function createFunction($db, string $schema, string $table, ?array $columns = null): void
     {
         $literalSchema = trim($schema, '"');
+        $col = $columns ?? Columns::all();
+        $names = implode(', ', [$col['schema'], $col['table'], $col['row_id'], $col['event'], $col['old_values'], $col['new_values'], $col['user_id'], $col['ip_address'], $col['user_agent'], $col['url']]);
         $literalTable = trim($table, '"');
 
         $db->unprepared(<<<SQL
@@ -130,7 +163,7 @@ class AuditSchema
                 END IF;
 
                 EXECUTE format(
-                    'INSERT INTO %I.%I (schema_name, table_name, row_pk, action, old_values, new_values, user_id, ip_address, user_agent, url)
+                    'INSERT INTO %I.%I ({$names})
                      VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10)',
                     '{$literalSchema}', log_table)
                 USING TG_TABLE_SCHEMA, TG_TABLE_NAME, pk, left(TG_OP, 1), old_vals, new_vals,

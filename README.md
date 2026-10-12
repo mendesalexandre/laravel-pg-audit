@@ -60,6 +60,38 @@ PgAudit::actingAs($id, $fn, connection: 'tenant');
 O trigger só grava no **mesmo banco** da tabela (limitação do PostgreSQL); "conexão separada" significa instalar o schema de auditoria em cada banco.
 Para o middleware preencher o contexto em outras conexões, liste-as em `context_connections`.
 
+## Nomes das colunas (idioma)
+
+Colunas do log, com o padrão em inglês (`auditable_id`) e preset em português (`auditavel_id`):
+
+| chave | `en` | `pt` |
+|---|---|---|
+| schema | `auditable_schema` | `auditavel_schema` |
+| table | `auditable_table` | `auditavel_tabela` |
+| row_id | `auditable_id` | `auditavel_id` |
+| event (I/U/D/T) | `event` | `evento` |
+| old_values / new_values | `old_values` / `new_values` | `valores_antigos` / `valores_novos` |
+| user_id | `user_id` | `usuario_id` |
+| ip_address / user_agent / url | `ip_address` / `user_agent` / `url` | `ip` / `navegador` / `url` |
+| db_user / transaction_id | `db_user` / `transaction_id` | `usuario_banco` / `transacao_id` |
+| created_at | `created_at` | `criado_em` |
+
+```php
+// config/pg-audit.php (ou PG_AUDIT_LOCALE=pt no .env)
+'locale' => 'pt',
+'columns' => ['row_id' => 'registro_id'],   // sobrescreve só uma coluna
+```
+
+Defina **antes** de instalar. Se mudar depois, gere a migration que renomeia as colunas existentes (mantém o histórico,
+cobre as tabelas por prefixo e recria a função do trigger):
+
+```bash
+php artisan pg-audit:rename-columns --from=en --to=pt
+```
+
+No model, use os nomes do idioma escolhido: `$log->auditavel_id`, `$log->valores_novos`, `$log->criado_em`.
+`$log->action_name` devolve `created|updated|deleted|truncated` em qualquer idioma.
+
 ## Uma tabela de log por tabela auditada (prefixo)
 
 Por padrão todas as tabelas gravam em `audit.logged_actions`. Com `prefix`, cada tabela auditada ganha a sua própria

@@ -11,6 +11,16 @@ return [
     'schema' => 'audit',
     'table' => 'logged_actions',
 
+    // Nomes das colunas da tabela de log. 'locale' escolhe um preset ('en' ou 'pt');
+    // 'columns' sobrescreve nomes individuais. Defina ANTES de rodar as migrations de instalação
+    // (o nome fica gravado na tabela e na função do trigger).
+    //   chaves: id, schema, table, row_id, event, old_values, new_values, user_id,
+    //           ip_address, user_agent, url, db_user, transaction_id, created_at
+    'locale' => env('PG_AUDIT_LOCALE', 'en'),
+    'columns' => [
+        // 'row_id' => 'registro_id',
+    ],
+
     // Prefixo para tabela de log POR tabela auditada (ex.: 'audit_' => audit_orders, audit_order_items).
     // null = todas usam a tabela única `table` acima.
     'table_prefix' => null,

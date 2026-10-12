@@ -4,6 +4,7 @@ namespace MendesAlexandre\PgAudit\Console;
 
 use Illuminate\Console\Command;
 use MendesAlexandre\PgAudit\Models\AuditLog;
+use MendesAlexandre\PgAudit\Support\Columns;
 
 class PruneCommand extends Command
 {
@@ -21,7 +22,7 @@ class PruneCommand extends Command
             return self::FAILURE;
         }
 
-        $deleted = AuditLog::where('created_at', '<', now()->subDays((int) $days))->delete();
+        $deleted = AuditLog::where(Columns::get('created_at'), '<', now()->subDays((int) $days))->delete();
         $this->components->info("{$deleted} registro(s) removido(s).");
 
         return self::SUCCESS;

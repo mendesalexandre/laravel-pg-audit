@@ -11,6 +11,7 @@ use MendesAlexandre\PgAudit\Console\EnableCommand;
 use MendesAlexandre\PgAudit\Console\InstallCommand;
 use MendesAlexandre\PgAudit\Console\MakeMigrationCommand;
 use MendesAlexandre\PgAudit\Console\PruneCommand;
+use MendesAlexandre\PgAudit\Console\RenameColumnsCommand;
 use MendesAlexandre\PgAudit\Console\StatusCommand;
 use MendesAlexandre\PgAudit\Console\SyncCommand;
 
@@ -27,7 +28,7 @@ class PgAuditServiceProvider extends ServiceProvider
         $this->registerBlueprintMacros();
 
         if ($this->app->runningInConsole()) {
-            $this->commands([InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
+            $this->commands([RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
 
             $this->publishes([__DIR__.'/../config/pg-audit.php' => config_path('pg-audit.php')], 'pg-audit-config');
             $this->publishes([
