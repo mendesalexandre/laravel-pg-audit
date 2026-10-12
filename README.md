@@ -74,6 +74,11 @@ docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=secret postgres:18
 composer install && vendor/bin/phpunit
 ```
 
+## Notas
+
+- `migrate:fresh` não apaga o schema `audit`; os logs antigos permanecem (em dev, use `DROP SCHEMA audit CASCADE`).
+- `password` e `remember_token` são ignorados por padrão (`global_except`). Mudanças nessa lista só valem para triggers criados depois; rode `pg-audit:enable` de novo para atualizar os existentes.
+
 ## Licença
 
 MIT

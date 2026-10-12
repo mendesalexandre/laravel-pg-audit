@@ -9,7 +9,7 @@ return [
     'table' => 'logged_actions',
 
     // Colunas nunca gravadas no log (aplicado a todas as tabelas auditadas).
-    'global_except' => ['remember_token'],
+    'global_except' => ['password', 'remember_token'],
 
     // Registrar TRUNCATE por padrão ao habilitar auditoria.
     'truncate' => true,
