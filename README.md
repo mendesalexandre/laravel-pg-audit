@@ -35,6 +35,31 @@ php artisan pg-audit:sync          # usa a chave "tables" da config
 php artisan pg-audit:prune --days=365
 ```
 
+## Schema e conexão separados
+
+Os logs podem ficar em schemas diferentes (e em bancos diferentes, via conexão). Padrões em `config/pg-audit.php` (`connection`, `schema`, `table`); por tabela:
+
+```php
+// instala outro schema de auditoria (na migration)
+AuditSchema::up(connection: 'tenant', schema: 'audit_financeiro', table: 'movimentos');
+
+// usa esse schema só nesta tabela (a conexão é a do Schema::connection(...) da migration)
+Schema::connection('tenant')->create('invoices', fn ($t) => $t->audit(schema: 'audit_financeiro'));
+```
+
+```bash
+php artisan pg-audit:enable invoices --schema=audit_financeiro --connection=tenant
+php artisan pg-audit:status --connection=tenant
+```
+
+```php
+AuditLog::inSchema('audit_financeiro', 'tenant', 'movimentos')->forTable('invoices')->get();
+PgAudit::actingAs($id, $fn, connection: 'tenant');
+```
+
+O trigger só grava no **mesmo banco** da tabela (limitação do PostgreSQL); "conexão separada" significa instalar o schema de auditoria em cada banco.
+Para o middleware preencher o contexto em outras conexões, liste-as em `context_connections`.
+
 ## Quem fez a alteração
 
 Registre o middleware **depois** da autenticação:

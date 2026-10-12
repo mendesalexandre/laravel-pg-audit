@@ -4,7 +4,10 @@ return [
     // Conexão do banco (null = padrão). Precisa ser pgsql.
     'connection' => env('PG_AUDIT_CONNECTION'),
 
-    // Schema e tabela onde os logs ficam.
+    // Conexões adicionais que também recebem o contexto (usuário/IP) no middleware.
+    'context_connections' => [],
+
+    // Schema e tabela padrão dos logs (pode ser sobrescrito por tabela auditada: audit(schema: ...)).
     'schema' => 'audit',
     'table' => 'logged_actions',
 

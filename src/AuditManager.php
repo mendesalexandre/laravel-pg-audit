@@ -12,15 +12,15 @@ class AuditManager
 {
     protected const CONTEXT_KEYS = ['user_id', 'ip_address', 'user_agent', 'url'];
 
-    public function connection(): Connection
+    public function connection(?string $name = null): Connection
     {
-        return DB::connection(config('pg-audit.connection'));
+        return DB::connection($name ?? config('pg-audit.connection'));
     }
 
     /** SQL (array) para habilitar auditoria numa tabela já qualificada/quoted. */
-    public function enableStatements(string $quotedTable, array $except = [], ?bool $truncate = null): array
+    public function enableStatements(string $quotedTable, array $except = [], ?bool $truncate = null, ?string $schema = null): array
     {
-        $schema = AuditSchema::q(config('pg-audit.schema'));
+        $schema = AuditSchema::q($schema ?? config('pg-audit.schema'));
         $columns = $this->columnList(array_merge(config('pg-audit.global_except', []), $except));
         $arg = "'".$columns."'";
         $row = AuditSchema::q(AuditSchema::TRIGGER_ROW);
@@ -47,26 +47,26 @@ class AuditManager
         ];
     }
 
-    public function enable(string $table, array $except = [], ?bool $truncate = null): void
+    public function enable(string $table, array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $connection = null): void
     {
-        $db = $this->connection();
-        foreach ($this->enableStatements($this->quoteTable($db, $table), $except, $truncate) as $sql) {
+        $db = $this->connection($connection);
+        foreach ($this->enableStatements($this->quoteTable($db, $table), $except, $truncate, $schema) as $sql) {
             $db->unprepared($sql);
         }
     }
 
-    public function disable(string $table): void
+    public function disable(string $table, ?string $connection = null): void
     {
-        $db = $this->connection();
+        $db = $this->connection($connection);
         foreach ($this->disableStatements($this->quoteTable($db, $table)) as $sql) {
             $db->unprepared($sql);
         }
     }
 
     /** Tabelas com auditoria ativa: [['table' => 'public.users', 'except' => 'a,b'], ...] */
-    public function audited(): array
+    public function audited(?string $connection = null): array
     {
-        $rows = $this->connection()->select(<<<'SQL'
+        $rows = $this->connection($connection)->select(<<<'SQL'
             SELECT n.nspname AS schema, c.relname AS table, pg_get_triggerdef(t.oid) AS def
               FROM pg_trigger t
               JOIN pg_class c ON c.oid = t.tgrelid
@@ -76,16 +76,16 @@ class AuditManager
         SQL, [AuditSchema::TRIGGER_ROW]);
 
         return array_map(function ($r) {
-            preg_match("/log_changes\\('([^']*)'\\)/", $r->def, $m);
+            preg_match("/EXECUTE FUNCTION (?:(.+)\\.)?log_changes\\('([^']*)'\\)/", $r->def, $m);
 
-            return ['table' => "{$r->schema}.{$r->table}", 'except' => $m[1] ?? ''];
+            return ['table' => "{$r->schema}.{$r->table}", 'audit_schema' => trim($m[1] ?? '', '"') ?: '(search_path)', 'except' => $m[2] ?? ''];
         }, $rows);
     }
 
     /** Define contexto da sessão do banco (lido pelo trigger). */
-    public function setContext(array $context): void
+    public function setContext(array $context, ?string $connection = null): void
     {
-        $db = $this->connection();
+        $db = $this->connection($connection);
         foreach (self::CONTEXT_KEYS as $key) {
             if (array_key_exists($key, $context)) {
                 $db->select('select set_config(?, ?, false)', ["audit.{$key}", (string) ($context[$key] ?? '')]);
@@ -93,23 +93,23 @@ class AuditManager
         }
     }
 
-    public function clearContext(): void
+    public function clearContext(?string $connection = null): void
     {
-        $this->setContext(array_fill_keys(self::CONTEXT_KEYS, ''));
+        $this->setContext(array_fill_keys(self::CONTEXT_KEYS, ''), $connection);
     }
 
     /** Executa o callback atribuindo as alterações a $userId e restaura o contexto depois. */
-    public function actingAs(string|int|null $userId, Closure $callback): mixed
+    public function actingAs(string|int|null $userId, Closure $callback, ?string $connection = null): mixed
     {
-        $db = $this->connection();
+        $db = $this->connection($connection);
         $previous = $db->selectOne("select nullif(current_setting('audit.user_id', true), '') as v")->v;
 
-        $this->setContext(['user_id' => (string) $userId]);
+        $this->setContext(['user_id' => (string) $userId], $connection);
 
         try {
             return $callback();
         } finally {
-            $this->setContext(['user_id' => (string) $previous]);
+            $this->setContext(['user_id' => (string) $previous], $connection);
         }
     }
 

@@ -14,8 +14,8 @@ class SyncCommand extends Command
     public function handle(AuditManager $audit): int
     {
         foreach (config('pg-audit.tables', []) as $key => $value) {
-            [$table, $except] = is_int($key) ? [$value, []] : [$key, $value['except'] ?? []];
-            $audit->enable($table, $except);
+            [$table, $opts] = is_int($key) ? [$value, []] : [$key, $value];
+            $audit->enable($table, $opts['except'] ?? [], null, $opts['schema'] ?? null, $opts['connection'] ?? null);
             $this->components->info("Auditoria habilitada: {$table}");
         }
 

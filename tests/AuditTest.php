@@ -85,9 +85,40 @@ class AuditTest extends TestCase
     public function test_status_and_disable(): void
     {
         $this->assertSame('public.posts', PgAudit::audited()[0]['table']);
-        $this->assertSame('updated_at,remember_token', implode(',', array_reverse(explode(',', PgAudit::audited()[0]['except']))));
+        $except = explode(',', PgAudit::audited()[0]['except']);
+        sort($except);
+        $this->assertSame(['password', 'remember_token', 'updated_at'], $except);
 
         PgAudit::disable('posts');
         $this->assertSame([], PgAudit::audited());
+    }
+
+    public function test_separate_schema_per_table(): void
+    {
+        AuditSchema::up(null, 'audit_fin', 'movimentos');
+        Schema::dropIfExists('invoices');
+        Schema::create('invoices', function (Blueprint $t) {
+            $t->id();
+            $t->integer('amount');
+            $t->audit(schema: 'audit_fin');
+        });
+
+        DB::table('invoices')->insert(['amount' => 10]);
+        DB::table('posts')->insert(['title' => 'p']);
+
+        $this->assertSame(1, AuditLog::inSchema('audit_fin', null, 'movimentos')->count());
+        $this->assertSame(1, AuditLog::count());           // schema padrão só tem o post
+        $this->assertSame('invoices', AuditLog::inSchema('audit_fin', null, 'movimentos')->first()->table_name);
+        $this->assertContains('audit_fin', array_column(PgAudit::audited(), 'audit_schema'));
+
+        Schema::dropIfExists('invoices');
+        AuditSchema::down(null, 'audit_fin');
+    }
+
+    public function test_explicit_connection_argument(): void
+    {
+        PgAudit::enable('public.posts', connection: 'pgsql');
+        DB::table('posts')->insert(['title' => 'x']);
+        $this->assertSame(1, AuditLog::on('pgsql')->count());
     }
 }

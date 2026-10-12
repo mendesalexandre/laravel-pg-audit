@@ -29,12 +29,22 @@ class AuditLog extends Model
 
     public function getConnectionName(): ?string
     {
-        return config('pg-audit.connection');
+        return $this->connection ?? config('pg-audit.connection');
     }
 
     public function getTable(): string
     {
-        return config('pg-audit.schema').'.'.config('pg-audit.table');
+        return $this->table ?? config('pg-audit.schema').'.'.config('pg-audit.table');
+    }
+
+    /** Query em outro schema/conexão: AuditLog::inSchema('audit_financeiro', 'tenant')->get() */
+    public static function inSchema(string $schema, ?string $connection = null, ?string $table = null): Builder
+    {
+        $model = new static;
+        $model->setConnection($connection ?? config('pg-audit.connection'));
+        $model->setTable($schema.'.'.($table ?? config('pg-audit.table')));
+
+        return $model->newQuery();
     }
 
     public function user(): BelongsTo

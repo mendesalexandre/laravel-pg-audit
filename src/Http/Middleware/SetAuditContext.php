@@ -13,12 +13,16 @@ class SetAuditContext
 
     public function handle(Request $request, Closure $next): Response
     {
-        $this->audit->setContext([
+        $context = [
             'user_id' => (string) ($request->user()?->getAuthIdentifier() ?? ''),
             'ip_address' => (string) $request->ip(),
             'user_agent' => mb_substr((string) $request->userAgent(), 0, 500),
             'url' => mb_substr($request->fullUrl(), 0, 1000),
-        ]);
+        ];
+
+        foreach ($this->connections() as $connection) {
+            $this->audit->setContext($context, $connection);
+        }
 
         return $next($request);
     }
@@ -26,6 +30,17 @@ class SetAuditContext
     /** Evita vazar contexto entre requests (Octane / conexões persistentes). */
     public function terminate(Request $request, Response $response): void
     {
-        $this->audit->clearContext();
+        foreach ($this->connections() as $connection) {
+            $this->audit->clearContext($connection);
+        }
+    }
+
+    /** Conexão principal + conexões extras (config "context_connections"). */
+    protected function connections(): array
+    {
+        return array_values(array_unique(
+            array_merge([config('pg-audit.connection')], config('pg-audit.context_connections', [])),
+            SORT_REGULAR
+        ));
     }
 }

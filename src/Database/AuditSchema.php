@@ -10,11 +10,12 @@ class AuditSchema
 
     public const TRIGGER_TRUNCATE = 'audit_trigger_stm';
 
-    public static function up(?string $connection = null): void
+    /** Instala schema, tabela de log e função. Todos os parâmetros têm padrão na config. */
+    public static function up(?string $connection = null, ?string $schema = null, ?string $table = null): void
     {
-        $db = DB::connection($connection);
-        $schema = self::q(config('pg-audit.schema'));
-        $table = self::q(config('pg-audit.table'));
+        $db = DB::connection($connection ?? config('pg-audit.connection'));
+        $schema = self::q($schema ?? config('pg-audit.schema'));
+        $table = self::q($table ?? config('pg-audit.table'));
 
         $db->unprepared("CREATE SCHEMA IF NOT EXISTS {$schema}");
 
@@ -44,12 +45,12 @@ class AuditSchema
         self::createFunction($db, $schema, $table);
     }
 
-    public static function down(?string $connection = null): void
+    public static function down(?string $connection = null, ?string $schema = null): void
     {
-        $schema = self::q(config('pg-audit.schema'));
+        $schema = self::q($schema ?? config('pg-audit.schema'));
 
         // CASCADE remove também os triggers que usam a função.
-        DB::connection($connection)->unprepared("DROP SCHEMA IF EXISTS {$schema} CASCADE");
+        DB::connection($connection ?? config('pg-audit.connection'))->unprepared("DROP SCHEMA IF EXISTS {$schema} CASCADE");
     }
 
     /**

@@ -7,13 +7,13 @@ use MendesAlexandre\PgAudit\AuditManager;
 
 class StatusCommand extends Command
 {
-    protected $signature = 'pg-audit:status';
+    protected $signature = 'pg-audit:status {--connection= : Conexão do banco}';
 
     protected $description = 'Lista as tabelas com auditoria ativa';
 
     public function handle(AuditManager $audit): int
     {
-        $rows = $audit->audited();
+        $rows = $audit->audited($this->option('connection'));
 
         if (! $rows) {
             $this->components->warn('Nenhuma tabela auditada.');
@@ -21,7 +21,7 @@ class StatusCommand extends Command
             return self::SUCCESS;
         }
 
-        $this->table(['Tabela', 'Colunas ignoradas'], array_map(fn ($r) => [$r['table'], $r['except'] ?: '-'], $rows));
+        $this->table(['Tabela', 'Schema do log', 'Colunas ignoradas'], array_map(fn ($r) => [$r['table'], $r['audit_schema'], $r['except'] ?: '-'], $rows));
 
         return self::SUCCESS;
     }
