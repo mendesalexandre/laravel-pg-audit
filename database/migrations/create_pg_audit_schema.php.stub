@@ -1,0 +1,22 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use MendesAlexandre\PgAudit\Database\AuditSchema;
+
+return new class extends Migration
+{
+    public function getConnection(): ?string
+    {
+        return config('pg-audit.connection');
+    }
+
+    public function up(): void
+    {
+        AuditSchema::up($this->getConnection());
+    }
+
+    public function down(): void
+    {
+        AuditSchema::down($this->getConnection());
+    }
+};

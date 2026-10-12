@@ -1,0 +1,30 @@
+{
+    "name": "mendesalexandre/laravel-pg-audit",
+    "description": "Auditoria automática para Laravel usando triggers do PostgreSQL.",
+    "keywords": ["laravel", "postgresql", "audit", "trigger", "auditoria"],
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "illuminate/support": "^11.0|^12.0",
+        "illuminate/database": "^11.0|^12.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0|^10.0",
+        "phpunit/phpunit": "^10.5|^11.0"
+    },
+    "autoload": {
+        "psr-4": { "MendesAlexandre\\PgAudit\\": "src/" }
+    },
+    "autoload-dev": {
+        "psr-4": { "MendesAlexandre\\PgAudit\\Tests\\": "tests/" }
+    },
+    "extra": {
+        "laravel": {
+            "providers": ["MendesAlexandre\\PgAudit\\PgAuditServiceProvider"],
+            "aliases": { "PgAudit": "MendesAlexandre\\PgAudit\\Facades\\PgAudit" }
+        }
+    },
+    "scripts": { "test": "phpunit" },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
