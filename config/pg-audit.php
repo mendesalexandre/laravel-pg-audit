@@ -11,7 +11,7 @@ return [
     'schema' => 'audit',
     'table' => 'logged_actions',
 
-    // Nomes das colunas da tabela de log. 'locale' escolhe um preset ('en' ou 'pt');
+    // Nomes das colunas da tabela de log. 'locale' escolhe um preset ('en' ou 'pt_BR');
     // 'columns' sobrescreve nomes individuais. Defina ANTES de rodar as migrations de instalação
     // (o nome fica gravado na tabela e na função do trigger).
     //   chaves: id, schema, table, row_id, event, old_values, new_values, user_id,

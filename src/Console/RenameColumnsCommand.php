@@ -12,7 +12,7 @@ class RenameColumnsCommand extends Command
     use ExportsValues;
 
     protected $signature = 'pg-audit:rename-columns
-        {--from=en : Preset atual das colunas no banco (en|pt)}
+        {--from=en : Preset atual das colunas no banco (en|pt_BR)}
         {--to= : Preset de destino (padrão: nomes da config atual, incluindo overrides)}
         {--from-columns=* : Overrides do estado atual, ex.: row_id=registro_id}
         {--schema= : Schema do log}

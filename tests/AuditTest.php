@@ -179,7 +179,7 @@ class AuditTest extends TestCase
     public function test_portuguese_preset_and_single_column_override(): void
     {
         AuditSchema::down();
-        config(['pg-audit.locale' => 'pt', 'pg-audit.columns' => ['row_id' => 'registro_id']]);
+        config(['pg-audit.locale' => 'pt_BR', 'pg-audit.columns' => ['row_id' => 'registro_id']]);
         AuditSchema::up();
         Schema::dropIfExists('posts');
         Schema::create('posts', function (Blueprint $t) {
@@ -220,9 +220,9 @@ class AuditTest extends TestCase
         DB::table('posts')->insert(['title' => 'antes']);
 
         $from = \MendesAlexandre\PgAudit\Support\Columns::for('en');
-        $to = \MendesAlexandre\PgAudit\Support\Columns::for('pt');
+        $to = \MendesAlexandre\PgAudit\Support\Columns::for('pt_BR');
         AuditSchema::renameColumns($from, $to);
-        config(['pg-audit.locale' => 'pt']);
+        config(['pg-audit.locale' => 'pt_BR']);
 
         DB::table('posts')->insert(['title' => 'depois']);
 
@@ -241,7 +241,7 @@ class AuditTest extends TestCase
         $dir = database_path('migrations');
         $before = glob($dir.'/*') ?: [];
 
-        $this->artisan('pg-audit:rename-columns', ['--from' => 'en', '--to' => 'pt'])->assertSuccessful();
+        $this->artisan('pg-audit:rename-columns', ['--from' => 'en', '--to' => 'pt_BR'])->assertSuccessful();
 
         $new = array_values(array_diff(glob($dir.'/*') ?: [], $before));
         $this->assertCount(1, $new);

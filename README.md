@@ -62,9 +62,9 @@ Para o middleware preencher o contexto em outras conexões, liste-as em `context
 
 ## Nomes das colunas (idioma)
 
-Colunas do log, com o padrão em inglês (`auditable_id`) e preset em português (`auditavel_id`):
+Colunas do log, com o padrão em inglês (`auditable_id`) e preset em português (`pt_BR`, `auditavel_id`):
 
-| chave | `en` | `pt` |
+| chave | `en` | `pt_BR` |
 |---|---|---|
 | schema | `auditable_schema` | `auditavel_schema` |
 | table | `auditable_table` | `auditavel_tabela` |
@@ -77,8 +77,8 @@ Colunas do log, com o padrão em inglês (`auditable_id`) e preset em português
 | created_at | `created_at` | `criado_em` |
 
 ```php
-// config/pg-audit.php (ou PG_AUDIT_LOCALE=pt no .env)
-'locale' => 'pt',
+// config/pg-audit.php (ou PG_AUDIT_LOCALE=pt_BR no .env)
+'locale' => 'pt_BR',
 'columns' => ['row_id' => 'registro_id'],   // sobrescreve só uma coluna
 ```
 
@@ -86,7 +86,7 @@ Defina **antes** de instalar. Se mudar depois, gere a migration que renomeia as 
 cobre as tabelas por prefixo e recria a função do trigger):
 
 ```bash
-php artisan pg-audit:rename-columns --from=en --to=pt
+php artisan pg-audit:rename-columns --from=en --to=pt_BR
 ```
 
 No model, use os nomes do idioma escolhido: `$log->auditavel_id`, `$log->valores_novos`, `$log->criado_em`.

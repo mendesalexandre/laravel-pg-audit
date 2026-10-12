@@ -27,7 +27,7 @@ class Columns
             'transaction_id' => 'transaction_id',
             'created_at' => 'created_at',
         ],
-        'pt' => [
+        'pt_BR' => [
             'id' => 'id',
             'schema' => 'auditavel_schema',
             'table' => 'auditavel_tabela',
