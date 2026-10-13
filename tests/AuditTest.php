@@ -32,6 +32,7 @@ class AuditTest extends TestCase
             'password' => env('DB_PASSWORD', 'secret'),
             'schema' => 'public',
         ]);
+        $app['config']->set('database.connections.pgsql_other', $app['config']->get('database.connections.pgsql'));
         // Leitura aponta para uma porta morta: qualquer set_config pela réplica falharia.
         $app['config']->set('database.connections.pgsql_rw', array_merge($app['config']->get('database.connections.pgsql'), [
             'read' => ['port' => 1],
@@ -329,6 +330,82 @@ class AuditTest extends TestCase
             unlink($file);
         }
         $this->assertSame([], PgAudit::audited());
+    }
+
+    public function test_without_auditing_pauses_only_this_session_and_logs_who(): void
+    {
+        PgAudit::setContext(['user_id' => '8']);
+
+        PgAudit::withoutAuditing(function () {
+            DB::table('posts')->insert(['title' => 'importado']);                     // não auditado
+            DB::connection('pgsql_other')->table('posts')->insert(['title' => 'outra sessão']); // continua auditado
+        }, reason: 'importação');
+
+        DB::table('posts')->insert(['title' => 'depois']);                            // retomado
+
+        $logs = AuditLog::orderBy('id')->get();
+        $this->assertSame(['P', 'I', 'R', 'I'], $logs->pluck('event')->all());
+        $this->assertSame('outra sessão', $logs[1]->new_values['title']);
+        $this->assertSame('depois', $logs[3]->new_values['title']);
+        $this->assertEquals(['tables' => '*', 'reason' => 'importação'], $logs[0]->new_values);
+        $this->assertSame('8', $logs[0]->user_id);
+        $this->assertSame('paused', $logs[0]->action_name);
+        $this->assertFalse(PgAudit::isPaused());
+    }
+
+    public function test_pause_specific_tables_and_resume_after_exception(): void
+    {
+        Schema::dropIfExists('notes');
+        Schema::create('notes', function (Blueprint $t) {
+            $t->id();
+            $t->string('body');
+            $t->audit();
+        });
+
+        try {
+            PgAudit::withoutAuditing(function () {
+                DB::table('posts')->insert(['title' => 'pausada']);
+                DB::table('notes')->insert(['body' => 'auditada']);
+                throw new \RuntimeException('falhou');
+            }, tables: ['posts']);
+        } catch (\RuntimeException) {
+        }
+
+        DB::table('posts')->insert(['title' => 'retomada']);
+
+        $this->assertFalse(PgAudit::isPaused());
+        $this->assertSame(['P', 'I', 'R', 'I'], AuditLog::orderBy('id')->pluck('event')->all());
+        $this->assertSame(['notes', 'posts'], AuditLog::where('event', 'I')->orderBy('id')->get()->map(fn ($l) => $l->auditable_table)->sort()->values()->all());
+        Schema::dropIfExists('notes');
+    }
+
+    public function test_pause_in_transaction_mode_requires_transaction_and_does_not_leak(): void
+    {
+        config(['pg-audit.context_mode' => 'transaction']);
+
+        try {
+            PgAudit::pause();
+            $this->fail('deveria exigir transação');
+        } catch (\LogicException) {
+        }
+
+        PgAudit::withoutAuditing(fn () => DB::table('posts')->insert(['title' => 'x']));
+        DB::transaction(fn () => DB::table('posts')->insert(['title' => 'y']));
+
+        $this->assertSame(['P', 'R', 'I'], AuditLog::orderBy('id')->pluck('event')->all());
+        $this->assertEmpty(DB::selectOne("select current_setting('audit.paused', true) as v")->v);
+    }
+
+    public function test_upgrade_refreshes_old_function_and_constraint(): void
+    {
+        // simula instalação antiga: constraint sem P/R
+        DB::statement('ALTER TABLE audit.logged_actions DROP CONSTRAINT logged_actions_event_check');
+        DB::statement("ALTER TABLE audit.logged_actions ADD CONSTRAINT logged_actions_event_check CHECK (event IN ('I','U','D','T'))");
+
+        $this->artisan('pg-audit:upgrade')->assertSuccessful();
+
+        PgAudit::withoutAuditing(fn () => DB::table('posts')->insert(['title' => 'ok']));
+        $this->assertSame(['P', 'R'], AuditLog::orderBy('id')->pluck('event')->all());
     }
 
     public function test_model_declares_except_array_and_enable_accepts_class(): void

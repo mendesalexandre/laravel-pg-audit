@@ -35,6 +35,25 @@ php artisan pg-audit:sync          # usa a chave "tables" da config
 php artisan pg-audit:prune --days=365
 ```
 
+## Pausar a auditoria (importações, seeders, correções em massa)
+
+A pausa vale **só para a sessão atual do banco**: outras conexões e requests concorrentes continuam auditados.
+Pausa e retomada ficam gravadas no log (eventos `P`/`R`, com usuário, IP, tabelas e motivo).
+
+```php
+PgAudit::withoutAuditing(function () {
+    $this->importarProdutos();            // nada disso é auditado
+}, reason: 'importação do ERP');
+
+PgAudit::withoutAuditing(fn () => Order::query()->update([...]), tables: ['orders']);   // só estas tabelas
+```
+
+Retoma sozinho ao final, inclusive se o callback lançar exceção. Também existem `PgAudit::pause()`, `resume()` e `isPaused()`.
+No modo `transaction` (PgBouncer) a pausa só vale dentro de transação: `withoutAuditing` abre uma sozinho; `pause()` solto
+fora de transação lança exceção.
+
+> **Instalações anteriores à pausa:** rode `php artisan pg-audit:upgrade` (recria a função do trigger e amplia a constraint de eventos). Os triggers existentes não mudam.
+
 ## Configuração dentro do model (array `$auditExcept`)
 
 Em vez de repetir `--except` em cada comando ou migration, declare no model:

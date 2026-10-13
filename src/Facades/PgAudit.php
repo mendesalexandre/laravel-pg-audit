@@ -8,6 +8,10 @@ use MendesAlexandre\PgAudit\AuditManager;
 /**
  * @method static void enable(string $table, array $except = [], ?bool $truncate = null)
  * @method static void enableModel(string $modelClass, array \$except = [], ?bool \$truncate = null)
+ * @method static void pause(string|array|null \$tables = null, ?string \$reason = null, ?string \$connection = null)
+ * @method static void resume(?string \$connection = null)
+ * @method static bool isPaused(?string \$connection = null)
+ * @method static mixed withoutAuditing(\Closure \$callback, string|array|null \$tables = null, ?string \$reason = null, ?string \$connection = null)
  * @method static void disable(string $table)
  * @method static array audited()
  * @method static void setContext(array $context)

@@ -11,6 +11,9 @@ class AuditSchema
 
     public const TRIGGER_TRUNCATE = 'audit_trigger_stm';
 
+    /** I/U/D/T = operações; P/R = auditoria pausada/retomada. */
+    public const EVENTS = ['I', 'U', 'D', 'T', 'P', 'R'];
+
     /** Instala schema, tabela de log e função. Todos os parâmetros têm padrão na config. */
     public static function up(?string $connection = null, ?string $schema = null, ?string $table = null): void
     {
@@ -25,6 +28,42 @@ class AuditSchema
         }
 
         self::createFunction($db, $schema, $table);
+    }
+
+    public static function eventsSql(): string
+    {
+        return implode(',', array_map(fn ($e) => "'{$e}'", self::EVENTS));
+    }
+
+    public static function checkName(string $table, string $eventColumn): string
+    {
+        return self::q(substr($table.'_'.$eventColumn.'_check', 0, 63));
+    }
+
+    /**
+     * Atualiza instalações existentes: recria a função do trigger (com suporte a pausa e log_event) e amplia
+     * a constraint de eventos das tabelas de log (padrão e por prefixo) para aceitar P/R.
+     */
+    public static function refreshFunction(?string $connection = null, ?string $schema = null, ?string $table = null): void
+    {
+        $db = DB::connection($connection ?? config('pg-audit.connection'));
+        $schemaName = self::ident($schema ?? config('pg-audit.schema'));
+        $col = Columns::all();
+
+        $tables = $db->select(<<<'SQL'
+            SELECT table_name FROM information_schema.columns
+             WHERE table_schema = ? AND column_name IN (?, ?)
+             GROUP BY table_name HAVING count(*) = 2
+        SQL, [$schemaName, $col['event'], $col['row_id']]);
+
+        foreach ($tables as $t) {
+            $name = self::checkName($t->table_name, $col['event']);
+            $qualified = self::q($schemaName).'.'.self::q($t->table_name);
+            $db->unprepared("ALTER TABLE {$qualified} DROP CONSTRAINT IF EXISTS {$name}");
+            $db->unprepared("ALTER TABLE {$qualified} ADD CONSTRAINT {$name} CHECK ({$col['event']} IN (".self::eventsSql().'))');
+        }
+
+        self::createFunction($db, self::q($schemaName), self::q(self::ident($table ?? config('pg-audit.table'))));
     }
 
     /**
@@ -65,6 +104,8 @@ class AuditSchema
         $idx = fn (string $suffix) => self::q(substr($raw.'_'.$suffix, 0, 63));
 
         $c = array_map(fn ($n) => self::q($n), Columns::all());
+        $events = self::eventsSql();
+        $checkName = self::checkName($raw, Columns::get('event'));
 
         return [
             <<<SQL
@@ -73,7 +114,7 @@ class AuditSchema
                 {$c['schema']}         text        NOT NULL,
                 {$c['table']}          text        NOT NULL,
                 {$c['row_id']}         text,
-                {$c['event']}          char(1)     NOT NULL CHECK ({$c['event']} IN ('I','U','D','T')),
+                {$c['event']}          char(1)     NOT NULL CONSTRAINT {$checkName} CHECK ({$c['event']} IN ({$events})),
                 {$c['old_values']}     jsonb,
                 {$c['new_values']}     jsonb,
                 {$c['user_id']}        text,
@@ -123,7 +164,16 @@ class AuditSchema
                 old_vals   jsonb;
                 new_vals   jsonb;
                 pk         text;
+                paused     text;
             BEGIN
+                -- auditoria pausada nesta sessão ('*' = tudo, ou lista de tabelas separadas por vírgula)
+                paused := NULLIF(current_setting('audit.paused', true), '');
+                IF paused IS NOT NULL AND (paused = '*'
+                   OR TG_TABLE_NAME = ANY (string_to_array(paused, ','))
+                   OR TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME = ANY (string_to_array(paused, ','))) THEN
+                    RETURN NULL;
+                END IF;
+
                 IF TG_NARGS > 0 AND TG_ARGV[0] <> '' THEN
                     excluded := string_to_array(TG_ARGV[0], ',');
                 END IF;
@@ -174,6 +224,20 @@ class AuditSchema
 
                 RETURN NULL;
             END;
+            \$fn\$
+        SQL);
+
+        // Registra eventos que não vêm de uma linha (pausa/retomada), com o mesmo contexto de usuário/IP.
+        $db->unprepared(<<<SQL
+            CREATE OR REPLACE FUNCTION {$schema}.log_event(p_event char, p_subject text, p_details jsonb) RETURNS void
+            LANGUAGE sql AS \$fn\$
+                INSERT INTO {$schema}.{$table}
+                    ({$col['schema']}, {$col['table']}, {$col['event']}, {$col['new_values']}, {$col['user_id']}, {$col['ip_address']}, {$col['user_agent']}, {$col['url']})
+                VALUES ('{$literalSchema}', p_subject, p_event, p_details,
+                    NULLIF(current_setting('audit.user_id', true), ''),
+                    NULLIF(current_setting('audit.ip_address', true), ''),
+                    NULLIF(current_setting('audit.user_agent', true), ''),
+                    NULLIF(current_setting('audit.url', true), ''))
             \$fn\$
         SQL);
     }

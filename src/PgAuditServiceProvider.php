@@ -16,6 +16,7 @@ use MendesAlexandre\PgAudit\Console\PruneCommand;
 use MendesAlexandre\PgAudit\Console\RenameColumnsCommand;
 use MendesAlexandre\PgAudit\Console\StatusCommand;
 use MendesAlexandre\PgAudit\Console\SyncCommand;
+use MendesAlexandre\PgAudit\Console\UpgradeCommand;
 
 class PgAuditServiceProvider extends ServiceProvider
 {
@@ -33,7 +34,7 @@ class PgAuditServiceProvider extends ServiceProvider
         Event::listen(TransactionBeginning::class, fn (TransactionBeginning $e) => app(AuditManager::class)->applyStored($e->connection));
 
         if ($this->app->runningInConsole()) {
-            $this->commands([RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
+            $this->commands([UpgradeCommand::class, RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
 
             $this->publishes([__DIR__.'/../config/pg-audit.php' => config_path('pg-audit.php')], 'pg-audit-config');
             $this->publishes([

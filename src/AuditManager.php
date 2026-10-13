@@ -7,11 +7,12 @@ use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Arr;
 use InvalidArgumentException;
+use LogicException;
 use MendesAlexandre\PgAudit\Database\AuditSchema;
 
 class AuditManager
 {
-    protected const CONTEXT_KEYS = ['user_id', 'ip_address', 'user_agent', 'url'];
+    protected const CONTEXT_KEYS = ['user_id', 'ip_address', 'user_agent', 'url', 'paused'];
 
     public function connection(?string $name = null): Connection
     {
@@ -199,6 +200,79 @@ class AuditManager
         } finally {
             $this->setContext(['user_id' => $previous], $connection);
         }
+    }
+
+    /**
+     * Pausa a auditoria NESTA sessão do banco (outras conexões continuam auditadas), registrando quem pausou.
+     * $tables: null = todas; ou nomes ('orders' / 'public.orders'). Prefira withoutAuditing(), que retoma sozinho.
+     */
+    public function pause(string|array|null $tables = null, ?string $reason = null, ?string $connection = null): void
+    {
+        $db = $this->connection($connection);
+        if ($this->mode() === 'transaction' && $db->transactionLevel() === 0) {
+            throw new LogicException('No modo transaction a pausa só vale dentro de uma transação: use PgAudit::withoutAuditing() ou DB::transaction().');
+        }
+
+        $subject = $tables === null ? '*' : implode(',', (array) $tables);
+        if (! preg_match('/^(\*|[A-Za-z0-9_.]+(,[A-Za-z0-9_.]+)*)$/', $subject)) {
+            throw new InvalidArgumentException("Tabelas inválidas para pausar: {$subject}");
+        }
+
+        $this->logEvent($db, 'P', $subject, $reason);          // registra antes de pausar
+        $this->setContext(['paused' => $subject], $connection);
+    }
+
+    /** Retoma a auditoria (e registra). Sem efeito se não estava pausada. */
+    public function resume(?string $connection = null): void
+    {
+        $this->restorePaused('', $connection);
+    }
+
+    public function isPaused(?string $connection = null): bool
+    {
+        return ($this->context[$this->contextKey($connection)]['paused'] ?? '') !== '';
+    }
+
+    /**
+     * Executa o callback com a auditoria pausada nesta sessão (tudo ou só $tables) e retoma ao final,
+     * inclusive se lançar exceção. Pausa e retomada ficam registradas no log. No modo transaction, abre transação.
+     */
+    public function withoutAuditing(Closure $callback, string|array|null $tables = null, ?string $reason = null, ?string $connection = null): mixed
+    {
+        $db = $this->connection($connection);
+        $previous = $this->context[$this->contextKey($connection)]['paused'] ?? '';
+
+        $run = function () use ($callback, $tables, $reason, $connection, $previous) {
+            $this->pause($tables, $reason, $connection);
+
+            try {
+                return $callback();
+            } finally {
+                $this->restorePaused($previous, $connection);
+            }
+        };
+
+        return $this->mode() === 'transaction' && $db->transactionLevel() === 0 ? $db->transaction($run) : $run();
+    }
+
+    protected function restorePaused(string $previous, ?string $connection): void
+    {
+        $key = $this->contextKey($connection);
+        $current = $this->context[$key]['paused'] ?? '';
+        if ($current === '') {
+            return;
+        }
+
+        $this->setContext(['paused' => $previous], $connection);   // retoma antes de registrar
+        $this->logEvent($this->connection($connection), 'R', $current, null);
+    }
+
+    protected function logEvent(Connection $db, string $event, string $subject, ?string $reason): void
+    {
+        $schema = AuditSchema::q(AuditSchema::ident(config('pg-audit.schema')));
+        $details = json_encode(array_filter(['tables' => $subject, 'reason' => $reason], fn ($v) => $v !== null));
+
+        $db->select("select {$schema}.log_event(?, ?, ?::jsonb)", [$event, $subject, $details], false);
     }
 
     /** Uma única ida ao banco, sempre pela conexão de escrita (o trigger roda nela). */

@@ -13,7 +13,7 @@ use MendesAlexandre\PgAudit\Support\Columns;
  * @property int $id
  * @property string $auditable_table
  * @property string|null $auditable_id
- * @property string $event  I|U|D|T
+ * @property string $event  I|U|D|T|P|R (P/R = auditoria pausada/retomada)
  * @property array|null $old_values
  * @property array|null $new_values
  * @property string|null $user_id
@@ -75,6 +75,6 @@ class AuditLog extends Model
 
     public function getActionNameAttribute(): string
     {
-        return ['I' => 'created', 'U' => 'updated', 'D' => 'deleted', 'T' => 'truncated'][$this->{Columns::get('event')}] ?? $this->{Columns::get('event')};
+        return ['I' => 'created', 'U' => 'updated', 'D' => 'deleted', 'T' => 'truncated', 'P' => 'paused', 'R' => 'resumed'][$this->{Columns::get('event')}] ?? $this->{Columns::get('event')};
     }
 }
