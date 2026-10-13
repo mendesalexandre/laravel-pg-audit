@@ -14,6 +14,9 @@ use MendesAlexandre\PgAudit\Support\Columns;
  *   protected string $auditSchema = 'audit_vendas';
  *   protected ?string $auditConnection = 'tenant';
  *   protected ?string $auditPrefix = 'audit_';
+ *   protected array $auditExcept = ['updated_at', 'views'];   // colunas fora do log
+ *
+ * Com isso: PgAudit::enableModel(Order::class) ou `php artisan pg-audit:enable "App\\Models\\Order"`.
  */
 trait HasAuditLog
 {
@@ -27,5 +30,17 @@ trait HasAuditLog
         return (new HasMany($log->newQuery(), $this, Columns::get('row_id'), $this->getKeyName()))
             ->where(Columns::get('table'), $this->getTable())
             ->latest(Columns::get('id'));
+    }
+
+    /** Configuração do trigger declarada no model (usada por PgAudit::enableModel / pg-audit:enable). */
+    public function auditConfig(): array
+    {
+        return [
+            'table' => $this->getTable(),
+            'except' => $this->auditExcept ?? [],
+            'schema' => $this->auditSchema ?? null,
+            'prefix' => $this->auditPrefix ?? null,
+            'connection' => $this->auditConnection ?? $this->getConnectionName(),
+        ];
     }
 }

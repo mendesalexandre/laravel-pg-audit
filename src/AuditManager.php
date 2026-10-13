@@ -81,6 +81,18 @@ class AuditManager
         }
     }
 
+    /** Habilita usando a configuração declarada no model (trait HasAuditLog). Colunas extras em $except somam às do model. */
+    public function enableModel(string $modelClass, array $except = [], ?bool $truncate = null): void
+    {
+        $model = new $modelClass;
+        if (! method_exists($model, 'auditConfig')) {
+            throw new InvalidArgumentException("{$modelClass} precisa usar o trait HasAuditLog.");
+        }
+
+        $c = $model->auditConfig();
+        $this->enable($c['table'], array_merge($c['except'], $except), $truncate, $c['schema'], $c['connection'], $c['prefix']);
+    }
+
     public function disable(string $table, ?string $connection = null): void
     {
         $db = $this->connection($connection);

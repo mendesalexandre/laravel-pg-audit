@@ -9,7 +9,7 @@ class SyncCommand extends Command
 {
     protected $signature = 'pg-audit:sync';
 
-    protected $description = 'Habilita a auditoria nas tabelas listadas em config/pg-audit.php (chave "tables")';
+    protected $description = 'Habilita a auditoria nas tabelas listadas em config/pg-audit.php (chaves "tables" e "models")';
 
     public function handle(AuditManager $audit): int
     {
@@ -17,6 +17,11 @@ class SyncCommand extends Command
             [$table, $opts] = is_int($key) ? [$value, []] : [$key, $value];
             $audit->enable($table, $opts['except'] ?? [], null, $opts['schema'] ?? null, $opts['connection'] ?? null, $opts['prefix'] ?? null);
             $this->components->info("Auditoria habilitada: {$table}");
+        }
+
+        foreach (config('pg-audit.models', []) as $model) {
+            $audit->enableModel($model);
+            $this->components->info("Auditoria habilitada (model): {$model}");
         }
 
         return self::SUCCESS;

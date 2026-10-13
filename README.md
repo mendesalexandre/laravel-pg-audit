@@ -35,6 +35,32 @@ php artisan pg-audit:sync          # usa a chave "tables" da config
 php artisan pg-audit:prune --days=365
 ```
 
+## Configuração dentro do model (array `$auditExcept`)
+
+Em vez de repetir `--except` em cada comando ou migration, declare no model:
+
+```php
+class Order extends Model
+{
+    use HasAuditLog;
+
+    protected array $auditExcept = ['updated_at', 'views'];   // colunas fora do log
+    protected string $auditSchema = 'audit_vendas';
+    protected string $auditPrefix = 'audit_';
+}
+```
+
+```bash
+php artisan pg-audit:enable "App\Models\Order"           # --except=x ainda soma às do model
+```
+
+```php
+PgAudit::enableModel(Order::class);
+```
+
+Ou liste os models em `config/pg-audit.php` (`'models' => [Order::class]`) e rode `php artisan pg-audit:sync`.
+Em migrations, o equivalente é `$t->audit(except: ['updated_at', 'views'])`.
+
 ## Schema e conexão separados
 
 Os logs podem ficar em schemas diferentes (e em bancos diferentes, via conexão). Padrões em `config/pg-audit.php` (`connection`, `schema`, `table`); por tabela:

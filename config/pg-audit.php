@@ -51,4 +51,10 @@ return [
     // Tabelas habilitadas por `php artisan pg-audit:sync`.
     // 'users' => ['except' => ['updated_at']]  ou apenas 'posts'
     'tables' => [],
+
+    // Models (com o trait HasAuditLog) cuja auditoria é habilitada por `pg-audit:sync`,
+    // usando $auditExcept / $auditSchema / $auditPrefix declarados no próprio model.
+    'models' => [
+        // App\Models\Order::class,
+    ],
 ];

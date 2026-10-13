@@ -7,6 +7,7 @@ use MendesAlexandre\PgAudit\AuditManager;
 
 /**
  * @method static void enable(string $table, array $except = [], ?bool $truncate = null)
+ * @method static void enableModel(string $modelClass, array \$except = [], ?bool \$truncate = null)
  * @method static void disable(string $table)
  * @method static array audited()
  * @method static void setContext(array $context)

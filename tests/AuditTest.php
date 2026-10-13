@@ -330,4 +330,31 @@ class AuditTest extends TestCase
         }
         $this->assertSame([], PgAudit::audited());
     }
+
+    public function test_model_declares_except_array_and_enable_accepts_class(): void
+    {
+        PgAudit::disable('posts');
+
+        $this->artisan('pg-audit:enable', ['tables' => [AuditedPost::class], '--except' => ['extra_col']])->assertSuccessful();
+
+        $row = PgAudit::audited()[0];
+        $except = explode(',', $row['except']);
+        foreach (['title_cache', 'views', 'extra_col', 'password'] as $col) {
+            $this->assertContains($col, $except);
+        }
+        $this->assertSame('public.posts', $row['table']);
+
+        config(['pg-audit.models' => [AuditedPost::class]]);
+        $this->artisan('pg-audit:sync')->assertSuccessful();
+        $this->assertCount(1, PgAudit::audited());
+    }
+}
+
+class AuditedPost extends \Illuminate\Database\Eloquent\Model
+{
+    use \MendesAlexandre\PgAudit\Concerns\HasAuditLog;
+
+    protected $table = 'posts';
+
+    protected array $auditExcept = ['title_cache', 'views'];
 }
