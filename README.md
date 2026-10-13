@@ -71,6 +71,23 @@ Por tabela: `$t->audit(captureQuery: true)`, `protected bool $auditCaptureQuery 
 - Com o PDO padrão do Laravel o texto sai parametrizado: `update "orders" set "status" = $1 where "id" = $2` (os valores reais
   continuam em `old_values`/`new_values`). Com `PDO::ATTR_EMULATE_PREPARES` ligado, os **valores vão embutidos no SQL** (e-mail, CPF...).
 - Um `UPDATE` em massa repete a mesma query em cada linha afetada.
+
+### `capture_query` e o PDO (`ATTR_EMULATE_PREPARES`)
+
+**Não altere o PDO por causa deste recurso.** O pacote espera o padrão do Laravel (prepares reais,
+`PDO::ATTR_EMULATE_PREPARES => false`), com o qual o SQL gravado é parametrizado e não carrega valores.
+
+Se você ligar `ATTR_EMULATE_PREPARES => true`:
+
+- o PDO monta o SQL no cliente e os **valores reais vão embutidos no texto** gravado (e-mail, CPF etc.);
+- tipos como booleanos, inteiros e `jsonb` podem se comportar diferente;
+- `old_values`/`new_values` não mudam, só o texto da query.
+
+É comum ligar essa opção para usar **PgBouncer em modo transaction**, porque versões antigas não suportam prepared
+statements nesse modo (o PgBouncer 1.21+ suporta, com `max_prepared_statements` configurado). Se o seu app já roda assim,
+confira o conteúdo do log antes de ligar `capture_query` e restrinja `capture_query_tables` às tabelas sem dados pessoais.
+
+Para saber **o que mudou**, use `old_values`/`new_values`; use `capture_query` só quando precisar da forma do SQL.
 - `capture_query` cria a coluna: defina **antes** de instalar; em instalações antigas rode `pg-audit:upgrade`.
   `capture_query_tables` vale na hora de habilitar o trigger: rode `pg-audit:enable` de novo ao mudar a lista.
 
