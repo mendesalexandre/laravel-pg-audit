@@ -292,6 +292,17 @@ Vale para `create/save/update/delete` do próprio model; não cobre `Customer::q
 (use o closure abaixo). **Trava de segurança:** se a gravação inclui uma coluna de `global_except` (password, remember_token), do `$auditExcept`
 do model ou de `protected array $literalQueryExcept = [...]`, aquela gravação continua parametrizada.
 
+**Por configuração (vale para `DB::table`, Eloquent e SQL cru com bindings, sem trait nem closure):**
+
+```php
+// config/pg-audit.php
+'capture_query' => true,
+'literal_query_tables' => ['customers', 'orders'],   // gravações nestas tabelas saem com os valores reais
+'literal_query_except' => ['token'],                 // colunas que nunca vão em texto (somam a global_except)
+```
+O pacote liga `ATTR_EMULATE_PREPARES` só nos statements `INSERT/UPDATE/DELETE` dessas tabelas e o desliga nos demais (inclui `SELECT`).
+Statement que cita uma coluna de `global_except` ou `literal_query_except` continua parametrizado. O gancho (`beforeExecuting`) só existe se a lista estiver preenchida.
+
 **Por bloco (qualquer código):**
 
 `capture_query` grava a query como o PostgreSQL a recebe: com o PDO padrão, `update "orders" set "total" = $1 where "id" = $2`.

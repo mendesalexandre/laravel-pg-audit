@@ -230,6 +230,44 @@ class AuditManager
         }
     }
 
+    /**
+     * Decide, para um statement, se os valores podem ir embutidos no SQL (config literal_query_tables):
+     * só INSERT/UPDATE/DELETE em tabela da lista e que não cita coluna sensível (global_except / literal_query_except).
+     */
+    public function shouldEmbedValues(string $sql): bool
+    {
+        $tables = config('pg-audit.literal_query_tables', []);
+        if (! $tables || ! preg_match('/^\s*(?:insert\s+into|update|delete\s+from)\s+(?:only\s+)?(?:"?\w+"?\.)?"?(\w+)"?/i', $sql, $m)) {
+            return false;
+        }
+        if (! in_array($m[1], $tables, true) && ! in_array('*', $tables, true)) {
+            return false;
+        }
+
+        foreach (array_merge(config('pg-audit.global_except', []), config('pg-audit.literal_query_except', [])) as $column) {
+            if (preg_match('/\b'.preg_quote($column, '/').'\b/i', $sql)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** Antes de cada statement da conexão, liga/desliga ATTR_EMULATE_PREPARES conforme shouldEmbedValues(). */
+    public function hookLiteralQueries(Connection $connection): void
+    {
+        $connection->beforeExecuting(function (string $query, array $bindings, Connection $conn) {
+            if (! config('pg-audit.literal_query_tables')) {
+                return;
+            }
+            $want = $this->shouldEmbedValues($query);
+            $pdo = $conn->getPdo();
+            if ((bool) $pdo->getAttribute(\PDO::ATTR_EMULATE_PREPARES) !== $want) {
+                $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, $want);
+            }
+        });
+    }
+
     /** O PDO desta conexão (escrita) está com prepares emulados? */
     public function emulatesPrepares(?string $connection = null): bool
     {

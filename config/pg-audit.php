@@ -68,6 +68,14 @@ return [
     'ddl_table' => 'schema_changes',
     'ddl_columns' => [],
 
+    // Tabelas cujas gravações (INSERT/UPDATE/DELETE) saem com os VALORES REAIS no SQL gravado por capture_query,
+    // por qualquer caminho (DB::table, Eloquent, SQL cru com bindings), sem mudar o PDO do app nem usar closure.
+    // O pacote liga ATTR_EMULATE_PREPARES só nos statements dessas tabelas. Use só em tabelas sem dado sensível:
+    // os valores também aparecem no log do servidor e no pg_stat_activity.
+    // Trava: statement que cita uma coluna de global_except ou de literal_query_except continua parametrizado.
+    'literal_query_tables' => [],     // ex.: ['customers', 'orders'] (nome da tabela, sem schema)
+    'literal_query_except' => [],     // colunas extras que nunca devem ir em texto (somam a global_except)
+
     // Dias de retenção para pg-audit:prune (null = nunca apaga).
     'retention_days' => null,
 
