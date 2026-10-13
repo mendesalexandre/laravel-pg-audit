@@ -146,6 +146,9 @@ class AuditSchema
             if (self::capturesQuery()) {
                 $db->unprepared("ALTER TABLE {$qualified} ADD COLUMN IF NOT EXISTS ".self::q($col['query']).' text');
             }
+            foreach (self::guardStatements(self::q($schemaName), self::q($t->table_name)) as $guard) {
+                $db->unprepared($guard);
+            }
             $db->unprepared("ALTER TABLE {$qualified} DROP CONSTRAINT IF EXISTS {$name}");
             $db->unprepared("ALTER TABLE {$qualified} ADD CONSTRAINT {$name} CHECK ({$col['event']} IN (".self::eventsSql().'))');
         }
@@ -215,7 +218,7 @@ class AuditSchema
         $versionColumn .= self::capturesSchemaVersion() ? "{$c['schema_version']} text,\n                " : '';
         $queryColumn = self::capturesQuery() ? "{$c['query']}          text,\n                " : '';
 
-        return [
+        $statements = [
             <<<SQL
             CREATE TABLE IF NOT EXISTS {$quotedSchema}.{$quotedTable} (
                 {$c['id']}             bigserial PRIMARY KEY,
@@ -238,6 +241,115 @@ class AuditSchema
             'CREATE INDEX IF NOT EXISTS '.$idx('created_idx')." ON {$quotedSchema}.{$quotedTable} ({$c['created_at']})",
             'CREATE INDEX IF NOT EXISTS '.$idx('user_idx')." ON {$quotedSchema}.{$quotedTable} ({$c['user_id']})",
         ];
+
+        return array_merge($statements, self::guardStatements($quotedSchema, $quotedTable));
+    }
+
+    /** O log é somente de inclusão (trigger que barra UPDATE/DELETE/TRUNCATE)? config append_only */
+    public static function appendOnly(): bool
+    {
+        return (bool) config('pg-audit.append_only', true);
+    }
+
+    public const GUARD_ROW = 'audit_log_guard_row';
+
+    public const GUARD_STM = 'audit_log_guard_stm';
+
+    /**
+     * Trigger que impede alterar/apagar linhas do log por engano (bug, `AuditLog::delete()`, script).
+     * Libera só dentro de PgAudit::withPurge() (usado pelo pg-audit:prune). NÃO é proteção contra quem tem acesso ao banco
+     * (ele pode ligar o mesmo GUC ou dropar o trigger): para isso use pg-audit:grant com um role sem UPDATE/DELETE.
+     */
+    public static function guardStatements(string $quotedSchema, string $quotedTable): array
+    {
+        $row = self::q(self::GUARD_ROW);
+        $stm = self::q(self::GUARD_STM);
+        $target = "{$quotedSchema}.{$quotedTable}";
+        $out = ["DROP TRIGGER IF EXISTS {$row} ON {$target}", "DROP TRIGGER IF EXISTS {$stm} ON {$target}"];
+
+        if (! self::appendOnly()) {
+            return $out;
+        }
+
+        return array_merge(
+            [self::protectFunctionSql($quotedSchema)],
+            $out,
+            [
+                "CREATE TRIGGER {$row} BEFORE UPDATE OR DELETE ON {$target} FOR EACH ROW EXECUTE FUNCTION {$quotedSchema}.protect_log()",
+                "CREATE TRIGGER {$stm} BEFORE TRUNCATE ON {$target} FOR EACH STATEMENT EXECUTE FUNCTION {$quotedSchema}.protect_log()",
+            ]
+        );
+    }
+
+    protected static function protectFunctionSql(string $quotedSchema): string
+    {
+        return <<<SQL
+            CREATE OR REPLACE FUNCTION {$quotedSchema}.protect_log() RETURNS trigger
+            LANGUAGE plpgsql AS \$fn\$
+            BEGIN
+                IF current_setting('audit.allow_purge', true) = 'on' THEN
+                    RETURN CASE TG_OP WHEN 'DELETE' THEN OLD WHEN 'UPDATE' THEN NEW ELSE NULL END;
+                END IF;
+
+                RAISE EXCEPTION 'O log de auditoria é somente de inclusão (% em %.%). Para apagar por retenção use pg-audit:prune.',
+                    TG_OP, TG_TABLE_SCHEMA, TG_TABLE_NAME
+                    USING ERRCODE = 'insufficient_privilege';
+            END;
+            \$fn\$
+        SQL;
+    }
+
+    /**
+     * Permissões mínimas para o role do app: só INSERT nas tabelas de log (nunca UPDATE/DELETE/TRUNCATE).
+     * Os triggers rodam como o role que grava, então ele precisa disso para auditar. $read adiciona SELECT
+     * (para a tela de histórico, pg-audit:deleted/restore). Vale para tabelas futuras do schema (default privileges).
+     * Rode como o dono do schema de auditoria. Se o role for o próprio dono, REVOKE não tem efeito: use um role separado.
+     *
+     * @return array<int, string> avisos
+     */
+    public static function grantApp(string $role, bool $read = false, ?string $connection = null, ?string $schema = null): array
+    {
+        $db = DB::connection($connection ?? config('pg-audit.connection'));
+        $schemaName = self::ident($schema ?? config('pg-audit.schema'));
+        $s = self::q($schemaName);
+        $r = self::q(self::ident($role));
+        $warnings = [];
+
+        $col = Columns::all();
+        $logTables = array_column($db->select(<<<'SQL'
+            SELECT table_name FROM information_schema.columns
+             WHERE table_schema = ? AND column_name IN (?, ?) GROUP BY table_name HAVING count(*) = 2
+        SQL, [$schemaName, $col['event'], $col['row_id']]), 'table_name');
+
+        $owners = array_column($db->select('SELECT tablename, tableowner FROM pg_tables WHERE schemaname = ?', [$schemaName]), 'tableowner', 'tablename');
+
+        $db->unprepared("GRANT USAGE ON SCHEMA {$s} TO {$r}");
+
+        foreach ($logTables as $table) {
+            $t = "{$s}.".self::q($table);
+            if (($owners[$table] ?? null) === $role) {
+                $warnings[] = "{$role} é o dono de {$schemaName}.{$table}: o dono sempre pode UPDATE/DELETE. Use um role separado.";
+            }
+            $db->unprepared("REVOKE ALL ON TABLE {$t} FROM {$r}");
+            $db->unprepared("GRANT INSERT ON TABLE {$t} TO {$r}");
+            if ($read) {
+                $db->unprepared("GRANT SELECT ON TABLE {$t} TO {$r}");
+            }
+        }
+
+        // o trigger lê a versão do esquema (schema_state) e a tabela de DDL é só leitura para o app
+        if ($db->selectOne('SELECT to_regclass(?) IS NOT NULL AS ok', ["{$s}.".self::q(self::STATE_TABLE)])->ok) {
+            $db->unprepared("GRANT SELECT ON TABLE {$s}.".self::q(self::STATE_TABLE)." TO {$r}");
+        }
+
+        $db->unprepared("GRANT USAGE ON ALL SEQUENCES IN SCHEMA {$s} TO {$r}");
+        $db->unprepared("ALTER DEFAULT PRIVILEGES IN SCHEMA {$s} GRANT INSERT ON TABLES TO {$r}");
+        $db->unprepared("ALTER DEFAULT PRIVILEGES IN SCHEMA {$s} GRANT USAGE ON SEQUENCES TO {$r}");
+        if ($read) {
+            $db->unprepared("ALTER DEFAULT PRIVILEGES IN SCHEMA {$s} GRANT SELECT ON TABLES TO {$r}");
+        }
+
+        return $warnings;
     }
 
     public static function down(?string $connection = null, ?string $schema = null): void

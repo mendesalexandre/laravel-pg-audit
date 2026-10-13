@@ -739,6 +739,124 @@ class AuditTest extends TestCase
         unlink($files[0]);
     }
 
+    public function test_log_is_append_only_and_prune_is_the_only_way_to_delete(): void
+    {
+        DB::table('posts')->insert(['title' => 'a']);
+
+        foreach ([
+            fn () => AuditLog::query()->update(['user_id' => 'fraude']),
+            fn () => AuditLog::query()->delete(),
+            fn () => DB::table('audit.logged_actions')->truncate(),
+        ] as $attempt) {
+            try {
+                $attempt();
+                $this->fail('o log deveria ser somente de inclusão');
+            } catch (\Illuminate\Database\QueryException $e) {
+                $this->assertStringContainsString('somente de inclusão', $e->getMessage());
+            }
+        }
+        $this->assertSame(1, AuditLog::count());
+
+        // linha antiga (insert é permitido) + prune por retenção em todas as tabelas de log
+        DB::table('audit.logged_actions')->insert([
+            'auditable_schema' => 'public', 'auditable_table' => 'posts', 'event' => 'I', 'created_at' => now()->subDays(90),
+        ]);
+        $this->artisan('pg-audit:prune', ['--days' => 30])->assertSuccessful();
+        $this->assertSame(1, AuditLog::count());                       // só a recente sobrou
+
+        // e o prune libera só dentro do bloco: depois, a trava volta
+        $this->expectException(\Illuminate\Database\QueryException::class);
+        AuditLog::query()->delete();
+    }
+
+    public function test_prune_reaches_prefixed_log_tables_too(): void
+    {
+        AuditSchema::up(null, 'audit_vendas');
+        Schema::dropIfExists('vorders');
+        Schema::create('vorders', function (Blueprint $t) {
+            $t->id();
+            $t->string('nota')->nullable();
+            $t->audit(schema: 'audit_vendas', prefix: 'audit_');
+        });
+        DB::table('vorders')->insert(['nota' => 'x']);
+        DB::table('audit_vendas.audit_vorders')->insert([
+            'auditable_schema' => 'public', 'auditable_table' => 'vorders', 'event' => 'I', 'created_at' => now()->subDays(90),
+        ]);
+        $this->assertSame(2, AuditLog::inSchema('audit_vendas', null, 'audit_vorders')->count());
+
+        $this->artisan('pg-audit:prune', ['--days' => 30])->assertSuccessful();
+
+        $this->assertSame(1, AuditLog::inSchema('audit_vendas', null, 'audit_vorders')->count());
+        try {
+            AuditLog::inSchema('audit_vendas', null, 'audit_vorders')->delete();     // a tabela por prefixo também é protegida
+            $this->fail('deveria bloquear');
+        } catch (\Illuminate\Database\QueryException) {
+        }
+
+        Schema::dropIfExists('vorders');
+        AuditSchema::down(null, 'audit_vendas');
+    }
+
+    public function test_append_only_can_be_disabled_and_upgrade_adds_it_to_old_installs(): void
+    {
+        // instalação antiga: sem os triggers de proteção
+        DB::statement('DROP TRIGGER audit_log_guard_row ON audit.logged_actions');
+        DB::statement('DROP TRIGGER audit_log_guard_stm ON audit.logged_actions');
+        DB::table('posts')->insert(['title' => 'a']);
+        AuditLog::query()->update(['user_id' => 'x']);                 // passa: sem trava
+
+        $this->artisan('pg-audit:upgrade')->assertSuccessful();
+        $this->expectException(\Illuminate\Database\QueryException::class);
+        AuditLog::query()->update(['user_id' => 'y']);                 // upgrade ligou a trava
+    }
+
+    public function test_append_only_false_leaves_the_log_editable(): void
+    {
+        AuditSchema::down();
+        config(['pg-audit.append_only' => false]);
+        AuditSchema::up();
+        $this->assertSame(0, (int) DB::selectOne("select count(*) as c from pg_trigger where tgname like 'audit_log_guard%'")->c);
+    }
+
+    public function test_grant_gives_the_app_role_insert_only_on_the_log(): void
+    {
+        $role = 'pgaudit_app_test';
+        DB::unprepared("DO \$\$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{$role}') THEN DROP OWNED BY {$role}; DROP ROLE {$role}; END IF; END \$\$");   // limpa execuções interrompidas
+        DB::statement("CREATE ROLE {$role} LOGIN PASSWORD 'pw'");
+
+        try {
+            DB::statement("GRANT ALL ON posts TO {$role}");
+            DB::statement("GRANT USAGE ON SEQUENCE posts_id_seq TO {$role}");
+            $this->artisan('pg-audit:grant', ['role' => $role])->assertSuccessful();
+
+            config(['database.connections.pgsql_app' => array_merge(config('database.connections.pgsql'), ['username' => $role, 'password' => 'pw'])]);
+            $app = DB::connection('pgsql_app');
+
+            // o app audita normalmente (trigger roda com as permissões dele)...
+            $app->table('posts')->insert(['title' => 'pelo app']);
+            $this->assertSame('pelo app', AuditLog::latest('id')->first()->new_values['title']);
+
+            // ... mas não consegue apagar, alterar nem ler o log
+            foreach (['delete from audit.logged_actions', "update audit.logged_actions set user_id = 'x'", 'truncate audit.logged_actions', 'select * from audit.logged_actions'] as $sql) {
+                try {
+                    $app->unprepared($sql);
+                    $this->fail("deveria negar: {$sql}");
+                } catch (\Illuminate\Database\QueryException $e) {
+                    $this->assertStringContainsString('42501', $e->getCode().$e->getMessage());
+                }
+            }
+            $this->assertSame(1, AuditLog::count());
+
+            // --read libera a leitura (tela de histórico), continuando sem DELETE
+            $this->artisan('pg-audit:grant', ['role' => $role, '--read' => true])->assertSuccessful();
+            $this->assertCount(1, $app->select('select * from audit.logged_actions'));
+        } finally {
+            DB::purge('pgsql_app');
+            DB::statement("DROP OWNED BY {$role}");
+            DB::statement("DROP ROLE IF EXISTS {$role}");
+        }
+    }
+
     public function test_deleted_and_restore_commands(): void
     {
         $id = DB::table('posts')->insertGetId(['title' => 'apagado sem querer']);

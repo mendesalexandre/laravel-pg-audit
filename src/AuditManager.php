@@ -12,7 +12,7 @@ use MendesAlexandre\PgAudit\Database\AuditSchema;
 
 class AuditManager
 {
-    protected const CONTEXT_KEYS = ['user_id', 'ip_address', 'user_agent', 'url', 'paused'];
+    protected const CONTEXT_KEYS = ['user_id', 'ip_address', 'user_agent', 'url', 'paused', 'allow_purge'];
 
     public function connection(?string $name = null): Connection
     {
@@ -426,6 +426,24 @@ class AuditManager
         $details = json_encode(array_filter(['tables' => $subject, 'reason' => $reason], fn ($v) => $v !== null));
 
         $db->select("select {$schema}.log_event(?, ?, ?::jsonb)", [$event, $subject, $details], false);
+    }
+
+    /**
+     * Libera, só dentro do callback e nesta sessão, apagar linhas do log (a trava append_only bloqueia fora daqui).
+     * Usado pelo pg-audit:prune. No modo transaction abre uma transação. Exige que o role tenha DELETE no log.
+     */
+    public function withPurge(Closure $callback, ?string $connection = null): mixed
+    {
+        $db = $this->connection($connection);
+        $previous = $this->context[$this->contextKey($connection)]['allow_purge'] ?? '';
+
+        $this->setContext(['allow_purge' => 'on'], $connection);
+
+        try {
+            return $this->mode() === 'transaction' && $db->transactionLevel() === 0 ? $db->transaction($callback) : $callback();
+        } finally {
+            $this->setContext(['allow_purge' => $previous], $connection);
+        }
     }
 
     /** Uma única ida ao banco, sempre pela conexão de escrita (o trigger roda nela). */

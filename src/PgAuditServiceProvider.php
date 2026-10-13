@@ -16,6 +16,7 @@ use MendesAlexandre\PgAudit\Console\DdlLogCommand;
 use MendesAlexandre\PgAudit\Console\DeletedCommand;
 use MendesAlexandre\PgAudit\Console\DisableCommand;
 use MendesAlexandre\PgAudit\Console\EnableCommand;
+use MendesAlexandre\PgAudit\Console\GrantCommand;
 use MendesAlexandre\PgAudit\Console\InstallCommand;
 use MendesAlexandre\PgAudit\Console\MakeMigrationCommand;
 use MendesAlexandre\PgAudit\Console\PruneCommand;
@@ -49,7 +50,7 @@ class PgAuditServiceProvider extends ServiceProvider
         });
 
         if ($this->app->runningInConsole()) {
-            $this->commands([RestoreCommand::class, DeletedCommand::class, VersionCommand::class, DdlLogCommand::class, UpgradeCommand::class, RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
+            $this->commands([GrantCommand::class, RestoreCommand::class, DeletedCommand::class, VersionCommand::class, DdlLogCommand::class, UpgradeCommand::class, RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
 
             $this->publishes([__DIR__.'/../config/pg-audit.php' => config_path('pg-audit.php')], 'pg-audit-config');
             $this->publishes([

@@ -6,8 +6,18 @@ contexto de usuário/IP e integração com migrations.
 
 ## Instalação
 
+Pacote **privado** (sem Packagist): aponte o Composer para o repositório e fixe a versão pela tag.
+
+```json
+"repositories": [
+    { "type": "vcs", "url": "git@github.com:mendesalexandre/laravel-pg-audit.git" }
+]
+```
+
+O servidor/CI precisa de acesso de leitura ao repositório (deploy key ou token). Depois:
+
 ```bash
-composer require mendesalexandre/laravel-pg-audit
+composer require mendesalexandre/laravel-pg-audit:^0.1
 php artisan vendor:publish --tag=pg-audit-migrations
 php artisan vendor:publish --tag=pg-audit-config   # opcional
 php artisan migrate
@@ -32,8 +42,29 @@ php artisan pg-audit:enable users orders --except=updated_at
 php artisan pg-audit:disable orders
 php artisan pg-audit:status
 php artisan pg-audit:sync          # usa a chave "tables" da config
-php artisan pg-audit:prune --days=365
+php artisan pg-audit:prune --days=365      # todas as tabelas de log; veja "Proteger o log"
 ```
+
+## Proteger o log (somente inclusão e permissões)
+
+Duas camadas, com alcances diferentes:
+
+**1. Trava contra acidente (`append_only`, ligada por padrão).** Um trigger barra `UPDATE`, `DELETE` e `TRUNCATE` nas tabelas de log, inclusive
+`AuditLog::query()->delete()` num script ou bug. Só o `pg-audit:prune` (via `PgAudit::withPurge()`) libera a exclusão por retenção.
+Em instalações antigas rode `pg-audit:upgrade`. **Não protege contra quem tem acesso ao banco** (ele pode dropar o trigger ou ligar o mesmo
+parâmetro de sessão): para isso, use a camada 2.
+
+**2. Role do app sem UPDATE/DELETE (proteção real).** Rode as migrations com um role *dono* e deixe o app conectar com outro role, que só pode inserir:
+
+```bash
+php artisan pg-audit:grant app_user            # INSERT nos logs (o trigger roda como o role que grava)
+php artisan pg-audit:grant app_user --read     # + SELECT (tela de histórico, pg-audit:deleted / restore)
+```
+
+- O comando vale também para tabelas de log criadas depois (default privileges). Se o role passado for o **dono** do schema, ele avisa: o dono sempre pode alterar o log.
+- O `pg-audit:prune` apaga, então rode com a conexão do dono: `php artisan pg-audit:prune --days=365 --connection=audit_owner`.
+- O app continua escrevendo nas tabelas de negócio com os privilégios dele; só o log fica restrito.
+- Mesmo assim, o dono do banco/superusuário pode alterar tudo: para evidência à prova de adulteração, envie os logs para fora (replicação lógica, arquivamento imutável).
 
 ## Pausar a auditoria (importações, seeders, correções em massa)
 

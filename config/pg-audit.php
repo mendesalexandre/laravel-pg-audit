@@ -76,6 +76,11 @@ return [
     'literal_query_tables' => [],     // ex.: ['customers', 'orders'] (nome da tabela, sem schema)
     'literal_query_except' => [],     // colunas extras que nunca devem ir em texto (somam a global_except)
 
+    // O log é somente de inclusão: um trigger barra UPDATE/DELETE/TRUNCATE (inclusive `AuditLog::delete()` por engano).
+    // O pg-audit:prune libera a exclusão por retenção. Não protege contra quem tem acesso ao banco: para isso,
+    // dê ao app um role sem UPDATE/DELETE com `php artisan pg-audit:grant <role>`.
+    'append_only' => true,
+
     // Dias de retenção para pg-audit:prune (null = nunca apaga).
     'retention_days' => null,
 
