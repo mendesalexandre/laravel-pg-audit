@@ -30,7 +30,7 @@ class PgAuditServiceProvider extends ServiceProvider
     {
         $this->registerBlueprintMacros();
 
-        Event::listen(TransactionBeginning::class, fn (TransactionBeginning $e) => $this->app->make(AuditManager::class)->applyStored($e->connection));
+        Event::listen(TransactionBeginning::class, fn (TransactionBeginning $e) => app(AuditManager::class)->applyStored($e->connection));
 
         if ($this->app->runningInConsole()) {
             $this->commands([RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
