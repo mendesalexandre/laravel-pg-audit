@@ -41,7 +41,7 @@ class RenameColumnsCommand extends Command
         $fromCode = var_export($from, true);
         $toCode = var_export($to, true);
 
-        $path = database_path('migrations/'.date('Y_m_d_His').'_rename_pg_audit_columns.php');
+        $path = $this->migrationPath('rename_pg_audit_columns');
         $files->ensureDirectoryExists(dirname($path));
         $files->put($path, <<<PHP
         <?php

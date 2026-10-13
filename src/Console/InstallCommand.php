@@ -26,7 +26,7 @@ class InstallCommand extends Command
             'table' => $this->option('table'),
         ]);
 
-        $path = database_path('migrations/'.date('Y_m_d_His').'_create_pg_audit_schema_'.$schema.'.php');
+        $path = $this->migrationPath('create_pg_audit_schema_'.$schema);
         $files->ensureDirectoryExists(dirname($path));
         $files->put($path, <<<PHP
         <?php

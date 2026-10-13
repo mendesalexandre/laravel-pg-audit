@@ -2,7 +2,9 @@
 
 namespace MendesAlexandre\PgAudit;
 
+use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Database\Schema\Grammars\PostgresGrammar;
 use Illuminate\Support\Fluent;
 use Illuminate\Support\ServiceProvider;
@@ -20,12 +22,15 @@ class PgAuditServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/pg-audit.php', 'pg-audit');
-        $this->app->singleton(AuditManager::class);
+        // scoped: zerado a cada request (Octane) e a cada job, evitando vazar contexto entre eles.
+        $this->app->scoped(AuditManager::class);
     }
 
     public function boot(): void
     {
         $this->registerBlueprintMacros();
+
+        Event::listen(TransactionBeginning::class, fn (TransactionBeginning $e) => $this->app->make(AuditManager::class)->applyStored($e->connection));
 
         if ($this->app->runningInConsole()) {
             $this->commands([RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);

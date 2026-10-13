@@ -4,6 +4,17 @@ return [
     // Conexão do banco (null = padrão). Precisa ser pgsql.
     'connection' => env('PG_AUDIT_CONNECTION'),
 
+    // Como o contexto (usuário/IP) chega ao trigger:
+    //  'session'     -> set_config na sessão do banco (padrão; NÃO use com PgBouncer em modo transaction)
+    //  'transaction' -> set_config local a cada transação (seguro com PgBouncer). Escritas fora de transação
+    //                   ficam sem usuário; o middleware envolve o request em transação (wrap_request_in_transaction).
+    'context_mode' => env('PG_AUDIT_CONTEXT_MODE', 'session'),
+    'wrap_request_in_transaction' => true,
+
+    // Métodos HTTP em que o middleware não define contexto (economiza idas ao banco), ex.: ['GET', 'HEAD', 'OPTIONS'].
+    // Só use se seus GETs nunca gravam.
+    'skip_methods' => [],
+
     // Conexões adicionais que também recebem o contexto (usuário/IP) no middleware.
     'context_connections' => [],
 

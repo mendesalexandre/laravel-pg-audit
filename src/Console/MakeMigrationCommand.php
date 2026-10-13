@@ -23,7 +23,7 @@ class MakeMigrationCommand extends Command
     {
         $tables = $this->argument('tables');
         $connection = $this->option('connection');
-        $schemaCall = $connection ? 'Schema::connection('.var_export($connection, true).')' : 'Schema';
+        $schemaCall = $connection ? 'Schema::connection('.var_export($connection, true).')->table' : 'Schema::table';
         $opts = $this->exportArgs([
             'except' => $this->option('except'),
             'schema' => $this->option('schema'),
@@ -33,12 +33,12 @@ class MakeMigrationCommand extends Command
         $up = $down = '';
         foreach ($tables as $table) {
             $t = var_export($table, true);
-            $up .= "        {$schemaCall}->table({$t}, fn (Blueprint \$t) => \$t->audit({$opts}));\n";
-            $down .= "        {$schemaCall}->table({$t}, fn (Blueprint \$t) => \$t->dropAudit());\n";
+            $up .= "        {$schemaCall}({$t}, fn (Blueprint \$t) => \$t->audit({$opts}));\n";
+            $down .= "        {$schemaCall}({$t}, fn (Blueprint \$t) => \$t->dropAudit());\n";
         }
 
         $name = 'enable_audit_on_'.implode('_', array_map(fn ($t) => str_replace('.', '_', $t), $tables));
-        $path = database_path('migrations/'.date('Y_m_d_His').'_'.$name.'.php');
+        $path = $this->migrationPath($name);
         $files->ensureDirectoryExists(dirname($path));
         $files->put($path, <<<PHP
         <?php

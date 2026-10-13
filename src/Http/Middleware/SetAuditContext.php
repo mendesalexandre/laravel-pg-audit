@@ -13,6 +13,10 @@ class SetAuditContext
 
     public function handle(Request $request, Closure $next): Response
     {
+        if (in_array($request->method(), config('pg-audit.skip_methods', []), true)) {
+            return $next($request);
+        }
+
         $context = [
             'user_id' => (string) ($request->user()?->getAuthIdentifier() ?? ''),
             'ip_address' => (string) $request->ip(),
@@ -22,6 +26,17 @@ class SetAuditContext
 
         foreach ($this->connections() as $connection) {
             $this->audit->setContext($context, $connection);
+        }
+
+        // Modo transaction (PgBouncer): o contexto só vale dentro de transação, então envolve o request em uma.
+        if ($this->audit->mode() === 'transaction' && config('pg-audit.wrap_request_in_transaction', true)) {
+            $run = array_reduce(
+                array_reverse($this->connections()),
+                fn (Closure $inner, $connection) => fn () => $this->audit->connection($connection)->transaction($inner),
+                fn () => $next($request)
+            );
+
+            return $run();
         }
 
         return $next($request);

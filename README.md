@@ -128,7 +128,10 @@ Registre o middleware **depois** da autenticação:
 
 ```php
 // bootstrap/app.php
-->withMiddleware(fn ($m) => $m->appendToGroup('web', \MendesAlexandre\PgAudit\Http\Middleware\SetAuditContext::class))
+->withMiddleware(function ($m) {
+    $m->appendToGroup('web', \MendesAlexandre\PgAudit\Http\Middleware\SetAuditContext::class);
+    $m->appendToGroup('api', \MendesAlexandre\PgAudit\Http\Middleware\SetAuditContext::class); // rotas api/* também
+})
 ```
 
 Fora de requests (jobs, comandos):
@@ -137,7 +140,17 @@ Fora de requests (jobs, comandos):
 PgAudit::actingAs($userId, fn () => $order->update([...]));
 ```
 
-> O contexto fica na sessão do banco; não use com PgBouncer em modo *transaction*.
+### PgBouncer (modo `transaction`), Octane e réplicas
+
+- **PgBouncer em modo transaction:** com o contexto na *sessão* (padrão), a conexão é compartilhada entre clientes e a
+  alteração pode ser atribuída a **outra pessoa**, sem erro. Use `PG_AUDIT_CONTEXT_MODE=transaction`: o contexto vira
+  `set_config(..., true)` (local da transação) a cada `BEGIN`, e o middleware envolve o request em uma transação
+  (`wrap_request_in_transaction`). Escritas fora de transação ficam **sem usuário** (nunca com o usuário errado);
+  em jobs/comandos use `PgAudit::actingAs($id, fn () => ...)`, que abre a transação sozinho nesse modo.
+- **Leitura/escrita separadas (`read`/`write`):** o contexto sempre é enviado pela conexão de escrita, onde o trigger roda.
+- **Octane/filas:** o gerenciador é `scoped` (zerado a cada request/job) e o middleware limpa o contexto no `terminate`.
+- **Custo:** o middleware faz 1 ida ao banco ao entrar e 1 ao sair. Se seus `GET` nunca gravam, `'skip_methods' => ['GET', 'HEAD', 'OPTIONS']` elimina isso.
+- **IP atrás de proxy (nginx/HAProxy):** configure `TrustProxies` no app, senão o IP gravado é o do proxy.
 
 ## Consultando
 

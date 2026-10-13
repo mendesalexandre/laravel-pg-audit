@@ -108,35 +108,107 @@ class AuditManager
         }, $rows);
     }
 
-    /** Define contexto da sessão do banco (lido pelo trigger). */
+    /** Contexto em memória por conexão (escopo do request/job). */
+    protected array $context = [];
+
+    /** 'session' (set_config na sessão) ou 'transaction' (set_config local por transação; seguro p/ PgBouncer). */
+    public function mode(): string
+    {
+        $mode = config('pg-audit.context_mode', 'session');
+
+        return in_array($mode, ['session', 'transaction'], true)
+            ? $mode
+            : throw new InvalidArgumentException("pg-audit.context_mode inválido: {$mode}");
+    }
+
+    /**
+     * Define o contexto lido pelo trigger (usuário, IP...).
+     *  - session: set_config(..., false) agora, pela conexão de ESCRITA.
+     *  - transaction: guarda em memória e aplica com set_config(..., true) a cada início de transação
+     *    (e agora, se já houver uma aberta). Fora de transação não há contexto: use PgAudit::actingAs() ou o middleware.
+     */
     public function setContext(array $context, ?string $connection = null): void
     {
+        $context = array_map(fn ($v) => (string) ($v ?? ''), array_intersect_key($context, array_flip(self::CONTEXT_KEYS)));
+        $key = $this->contextKey($connection);
+        $this->context[$key] = array_merge($this->context[$key] ?? [], $context);
+
         $db = $this->connection($connection);
-        foreach (self::CONTEXT_KEYS as $key) {
-            if (array_key_exists($key, $context)) {
-                $db->select('select set_config(?, ?, false)', ["audit.{$key}", (string) ($context[$key] ?? '')]);
-            }
+        if ($this->mode() === 'session') {
+            $this->apply($db, $context, false);
+        } elseif ($db->transactionLevel() > 0) {
+            $this->apply($db, $context, true);
         }
     }
 
     public function clearContext(?string $connection = null): void
     {
-        $this->setContext(array_fill_keys(self::CONTEXT_KEYS, ''), $connection);
+        $blank = array_fill_keys(self::CONTEXT_KEYS, '');
+        unset($this->context[$this->contextKey($connection)]);
+
+        $db = $this->connection($connection);
+        if ($this->mode() === 'session') {
+            $this->apply($db, $blank, false);
+        } elseif ($db->transactionLevel() > 0) {
+            $this->apply($db, $blank, true);
+        }
     }
 
-    /** Executa o callback atribuindo as alterações a $userId e restaura o contexto depois. */
+    /** Chamado no início de cada transação (modo transaction). */
+    public function applyStored(Connection $db): void
+    {
+        if ($this->mode() !== 'transaction') {
+            return;
+        }
+
+        $context = $this->context[$this->contextKey($db->getName())] ?? [];
+        if ($context) {
+            $this->apply($db, $context, true);
+        }
+    }
+
+    /**
+     * Executa o callback atribuindo as alterações a $userId e restaura o contexto depois.
+     * No modo transaction, abre uma transação se não houver uma, para o contexto valer nas escritas.
+     */
     public function actingAs(string|int|null $userId, Closure $callback, ?string $connection = null): mixed
     {
-        $db = $this->connection($connection);
-        $previous = $db->selectOne("select nullif(current_setting('audit.user_id', true), '') as v")->v;
+        $key = $this->contextKey($connection);
+        $previous = $this->context[$key]['user_id'] ?? '';
 
         $this->setContext(['user_id' => (string) $userId], $connection);
 
         try {
-            return $callback();
+            $db = $this->connection($connection);
+
+            return $this->mode() === 'transaction' && $db->transactionLevel() === 0
+                ? $db->transaction($callback)
+                : $callback();
         } finally {
-            $this->setContext(['user_id' => (string) $previous], $connection);
+            $this->setContext(['user_id' => $previous], $connection);
         }
+    }
+
+    /** Uma única ida ao banco, sempre pela conexão de escrita (o trigger roda nela). */
+    protected function apply(Connection $db, array $context, bool $local): void
+    {
+        $calls = [];
+        $bindings = [];
+        foreach (self::CONTEXT_KEYS as $key) {
+            if (array_key_exists($key, $context)) {
+                $calls[] = 'set_config(?, ?, '.($local ? 'true' : 'false').')';
+                array_push($bindings, "audit.{$key}", $context[$key]);
+            }
+        }
+
+        if ($calls) {
+            $db->select('select '.implode(', ', $calls), $bindings, false);
+        }
+    }
+
+    protected function contextKey(?string $connection): string
+    {
+        return $connection ?? config('pg-audit.connection') ?? config('database.default');
     }
 
     protected function columnList(array $columns): string

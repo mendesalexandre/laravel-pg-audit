@@ -30,6 +30,11 @@ class AuditTest extends TestCase
             'password' => env('DB_PASSWORD', 'secret'),
             'schema' => 'public',
         ]);
+        // Leitura aponta para uma porta morta: qualquer set_config pela réplica falharia.
+        $app['config']->set('database.connections.pgsql_rw', array_merge($app['config']->get('database.connections.pgsql'), [
+            'read' => ['port' => 1],
+            'write' => ['port' => env('DB_PORT', 5432)],
+        ]));
     }
 
     protected function setUp(): void
@@ -249,5 +254,55 @@ class AuditTest extends TestCase
         unlink($new[0]);
         $this->assertStringContainsString("'created_at' => 'criado_em'", $code);
         $this->assertStringContainsString('AuditSchema::renameColumns($this->from, $this->to)', $code);
+    }
+
+    public function test_context_uses_write_connection_when_read_write_split(): void
+    {
+        PgAudit::setContext(['user_id' => '3', 'ip_address' => '10.0.0.1', 'url' => 'http://x/y'], 'pgsql_rw');
+        DB::connection('pgsql_rw')->table('posts')->insert(['title' => 'rw']);
+
+        $log = AuditLog::first();
+        $this->assertSame('3', $log->user_id);
+        $this->assertSame('10.0.0.1', $log->ip_address);
+        $this->assertSame('http://x/y', $log->url);
+    }
+
+    public function test_transaction_mode_is_scoped_to_the_transaction(): void
+    {
+        config(['pg-audit.context_mode' => 'transaction']);
+
+        PgAudit::setContext(['user_id' => '5']);
+        DB::table('posts')->insert(['title' => 'fora']);                       // sem transação: sem usuário
+        DB::transaction(fn () => DB::table('posts')->insert(['title' => 'dentro']));
+        // nada vaza para a sessão (o PgBouncer pode entregar a mesma sessão a outro cliente)
+        $this->assertEmpty(DB::selectOne("select current_setting('audit.user_id', true) as v")->v);
+
+        PgAudit::actingAs(9, fn () => DB::table('posts')->insert(['title' => 'acting']));
+
+        $this->assertSame([null, '5', '9'], AuditLog::orderBy('id')->pluck('user_id')->all());
+        $this->assertEmpty(DB::selectOne("select current_setting('audit.user_id', true) as v")->v);
+    }
+
+    public function test_make_migration_generates_executable_schema_table_calls(): void
+    {
+        $dir = database_path('migrations');
+        $before = glob($dir.'/*') ?: [];
+        $this->artisan('pg-audit:make-migration', ['tables' => ['posts'], '--connection' => 'pgsql'])->assertSuccessful();
+        $this->artisan('pg-audit:make-migration', ['tables' => ['posts']])->assertSuccessful();
+
+        $files = array_values(array_diff(glob($dir.'/*') ?: [], $before));
+        $this->assertCount(2, $files);
+        foreach ($files as $file) {
+            $code = file_get_contents($file);
+            $this->assertStringNotContainsString('Schema->', $code);
+            $this->assertMatchesRegularExpression("/Schema::(connection\\('pgsql'\\)->)?table\\('posts'/", $code);
+
+            // executa de verdade: reaplica o trigger e desfaz
+            $migration = require $file;
+            $migration->up();
+            $migration->down();
+            unlink($file);
+        }
+        $this->assertSame([], PgAudit::audited());
     }
 }
