@@ -7,7 +7,7 @@ use MendesAlexandre\PgAudit\AuditManager;
 
 class EnableCommand extends Command
 {
-    protected $signature = 'pg-audit:enable {tables* : Tabelas ou classes de model (App\\Models\\Order)} {--except=* : Colunas ignoradas} {--no-truncate : Não auditar TRUNCATE} {--schema= : Schema do log (padrão: config)} {--connection= : Conexão do banco} {--prefix= : Prefixo da tabela de log própria (ex.: audit_)}';
+    protected $signature = 'pg-audit:enable {tables* : Tabelas ou classes de model (App\\Models\\Order)} {--except=* : Colunas ignoradas} {--no-truncate : Não auditar TRUNCATE} {--schema= : Schema do log (padrão: config)} {--connection= : Conexão do banco} {--capture-query : Grava o SQL (current_query) nesta tabela} {--prefix= : Prefixo da tabela de log própria (ex.: audit_)}';
 
     protected $description = 'Habilita a auditoria (trigger) nas tabelas informadas';
 
@@ -21,7 +21,7 @@ class EnableCommand extends Command
                 continue;
             }
 
-            $audit->enable($table, $this->option('except'), $this->option('no-truncate') ? false : null, $this->option('schema'), $this->option('connection'), $this->option('prefix'));
+            $audit->enable($table, $this->option('except'), $this->option('no-truncate') ? false : null, $this->option('schema'), $this->option('connection'), $this->option('prefix'), $this->option('capture-query') ?: null);
             $this->components->info("Auditoria habilitada: {$table}");
         }
 

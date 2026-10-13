@@ -440,6 +440,57 @@ class AuditTest extends TestCase
         $this->assertSame(1, AuditLog::count());
     }
 
+    public function test_capture_query_is_opt_in_per_table_and_truncated(): void
+    {
+        AuditSchema::down();
+        config(['pg-audit.capture_query' => true, 'pg-audit.capture_query_tables' => ['posts'], 'pg-audit.query_max_length' => 40]);
+        AuditSchema::up();
+        Schema::dropIfExists('posts');
+        Schema::create('posts', fn (Blueprint $t) => tap($t, function ($t) {
+            $t->id();
+            $t->string('title');
+            $t->audit();
+        }));
+        Schema::dropIfExists('notes');
+        Schema::create('notes', fn (Blueprint $t) => tap($t, function ($t) {
+            $t->id();
+            $t->string('body');
+            $t->audit();
+        }));
+
+        DB::table('posts')->insert(['title' => 'a']);
+        DB::table('notes')->insert(['body' => 'b']);
+
+        $post = AuditLog::where('auditable_table', 'posts')->first();
+        $note = AuditLog::where('auditable_table', 'notes')->first();
+        $this->assertStringStartsWith('insert into "posts"', $post->query);
+        $this->assertLessThanOrEqual(40, strlen($post->query));
+        $this->assertNull($note->query);                                   // fora da lista
+        $this->assertTrue(collect(PgAudit::audited())->firstWhere('table', 'public.posts')['captures_query']);
+        $this->assertFalse(collect(PgAudit::audited())->firstWhere('table', 'public.notes')['captures_query']);
+
+        Schema::dropIfExists('notes');
+    }
+
+    public function test_capture_query_requires_global_flag_and_upgrade_adds_column(): void
+    {
+        // padrão: desligado e sem coluna
+        $this->assertFalse(Schema::hasColumn('audit.logged_actions', 'query'));
+        try {
+            PgAudit::enable('posts', captureQuery: true);
+            $this->fail('deveria exigir capture_query');
+        } catch (\InvalidArgumentException) {
+        }
+
+        // instalação antiga + ligou depois: upgrade cria a coluna, reabilitar liga a tabela
+        config(['pg-audit.capture_query' => true]);
+        $this->artisan('pg-audit:upgrade')->assertSuccessful();
+        PgAudit::enable('posts');
+        DB::table('posts')->insert(['title' => 'q']);
+
+        $this->assertStringContainsString('insert into "posts"', AuditLog::first()->query);
+    }
+
     public function test_model_declares_except_array_and_enable_accepts_class(): void
     {
         PgAudit::disable('posts');

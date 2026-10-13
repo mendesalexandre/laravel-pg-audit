@@ -21,7 +21,7 @@ class StatusCommand extends Command
             return self::SUCCESS;
         }
 
-        $this->table(['Tabela', 'Schema do log', 'Tabela de log', 'Colunas ignoradas'], array_map(fn ($r) => [$r['table'], $r['audit_schema'], $r['log_table'], $r['except'] ?: '-'], $rows));
+        $this->table(['Tabela', 'Schema do log', 'Tabela de log', 'Grava query', 'Colunas ignoradas'], array_map(fn ($r) => [$r['table'], $r['audit_schema'], $r['log_table'], $r['captures_query'] ? 'sim' : '-', $r['except'] ?: '-'], $rows));
 
         return self::SUCCESS;
     }

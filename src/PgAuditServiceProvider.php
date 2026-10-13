@@ -49,8 +49,8 @@ class PgAuditServiceProvider extends ServiceProvider
      */
     protected function registerBlueprintMacros(): void
     {
-        Blueprint::macro('audit', function (array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $prefix = null) {
-            return $this->addCommand('audit', compact('except', 'truncate', 'schema', 'prefix'));
+        Blueprint::macro('audit', function (array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $prefix = null, ?bool $captureQuery = null) {
+            return $this->addCommand('audit', compact('except', 'truncate', 'schema', 'prefix', 'captureQuery'));
         });
 
         Blueprint::macro('dropAudit', function () {
@@ -59,7 +59,7 @@ class PgAuditServiceProvider extends ServiceProvider
 
         PostgresGrammar::macro('compileAudit', function (Blueprint $blueprint, Fluent $command) {
             return app(AuditManager::class)->enableStatements(
-                $this->wrapTable($blueprint), $command->except ?? [], $command->truncate, $command->schema, $command->prefix
+                $this->wrapTable($blueprint), $command->except ?? [], $command->truncate, $command->schema, $command->prefix, $command->captureQuery
             );
         });
 

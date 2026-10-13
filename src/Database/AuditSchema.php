@@ -36,6 +36,12 @@ class AuditSchema
         return (bool) config('pg-audit.capture_db_version', true);
     }
 
+    /** O texto da query (current_query()) pode ser gravado? Cria a coluna; cada tabela decide ao habilitar. */
+    public static function capturesQuery(): bool
+    {
+        return (bool) config('pg-audit.capture_query', false);
+    }
+
     /** Expressão SQL da versão curta do servidor. */
     public const VERSION_SQL = "split_part(current_setting('server_version'), ' ', 1)";
 
@@ -70,6 +76,9 @@ class AuditSchema
             $qualified = self::q($schemaName).'.'.self::q($t->table_name);
             if (self::capturesVersion()) {
                 $db->unprepared("ALTER TABLE {$qualified} ADD COLUMN IF NOT EXISTS ".self::q($col['db_version']).' text');
+            }
+            if (self::capturesQuery()) {
+                $db->unprepared("ALTER TABLE {$qualified} ADD COLUMN IF NOT EXISTS ".self::q($col['query']).' text');
             }
             $db->unprepared("ALTER TABLE {$qualified} DROP CONSTRAINT IF EXISTS {$name}");
             $db->unprepared("ALTER TABLE {$qualified} ADD CONSTRAINT {$name} CHECK ({$col['event']} IN (".self::eventsSql().'))');
@@ -120,6 +129,7 @@ class AuditSchema
         $events = self::eventsSql();
         $checkName = self::checkName($raw, Columns::get('event'));
         $versionColumn = self::capturesVersion() ? "{$c['db_version']}     text,\n                " : '';
+        $queryColumn = self::capturesQuery() ? "{$c['query']}          text,\n                " : '';
 
         return [
             <<<SQL
@@ -135,7 +145,7 @@ class AuditSchema
                 {$c['ip_address']}     text,
                 {$c['user_agent']}     text,
                 {$c['url']}            text,
-                {$versionColumn}{$c['db_user']}        text        NOT NULL DEFAULT session_user,
+                {$versionColumn}{$queryColumn}{$c['db_user']}        text        NOT NULL DEFAULT session_user,
                 {$c['transaction_id']} bigint      NOT NULL DEFAULT txid_current(),
                 {$c['created_at']}     timestamptz NOT NULL DEFAULT clock_timestamp()
             )
@@ -170,6 +180,11 @@ class AuditSchema
         if ($version) {
             $list[] = $eventList[] = $col['db_version'];
         }
+        $query = self::capturesQuery();
+        if ($query) {
+            $list[] = $col['query'];
+        }
+        $queryUsing = $query ? ",\n                    CASE WHEN capture_q THEN left(current_query(), ".max(1, (int) config('pg-audit.query_max_length', 2000)).') END' : '';
         $names = implode(', ', $list);
         $eventNames = implode(', ', $eventList);
         $placeholders = implode(', ', array_map(fn ($i) => '$'.$i, range(1, count($list))));
@@ -189,6 +204,7 @@ class AuditSchema
                 new_vals   jsonb;
                 pk         text;
                 paused     text;
+                capture_q  boolean := TG_NARGS > 2 AND TG_ARGV[2] = 'q';
             BEGIN
                 -- auditoria pausada nesta sessão ('*' = tudo, ou lista de tabelas separadas por vírgula)
                 paused := NULLIF(current_setting('audit.paused', true), '');
@@ -244,7 +260,7 @@ class AuditSchema
                     NULLIF(current_setting('audit.user_id', true), ''),
                     NULLIF(current_setting('audit.ip_address', true), ''),
                     NULLIF(current_setting('audit.user_agent', true), ''),
-                    NULLIF(current_setting('audit.url', true), ''){$versionUsing};
+                    NULLIF(current_setting('audit.url', true), ''){$versionUsing}{$queryUsing};
 
                 RETURN NULL;
             END;

@@ -36,6 +36,15 @@ return [
     // Instalações antigas: rode `php artisan pg-audit:upgrade` para criar a coluna.
     'capture_db_version' => true,
 
+    // Grava o texto do SQL (current_query()) em cada linha. DESLIGADO por padrão: o texto pode conter dados
+    // sensíveis (com prepares emulados vêm os valores reais) e se repete em updates em massa.
+    // Defina antes de instalar (cria a coluna query/consulta); instalações antigas: pg-audit:upgrade.
+    'capture_query' => false,
+    // Só grava nestas tabelas (vazio = todas). Vale na hora de habilitar: rode pg-audit:enable de novo ao mudar.
+    'capture_query_tables' => [],
+    // Tamanho máximo gravado (truncado).
+    'query_max_length' => 2000,
+
     // Prefixo para tabela de log POR tabela auditada (ex.: 'audit_' => audit_orders, audit_order_items).
     // null = todas usam a tabela única `table` acima.
     'table_prefix' => null,

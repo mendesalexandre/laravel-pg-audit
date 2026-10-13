@@ -23,7 +23,7 @@ class AuditManager
      * SQL (array) para habilitar auditoria numa tabela.
      * $prefix (ou config "table_prefix") cria uma tabela de log própria: prefixo + nome da tabela (ex.: audit_orders).
      */
-    public function enableStatements(string $quotedTable, array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $prefix = null): array
+    public function enableStatements(string $quotedTable, array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $prefix = null, ?bool $captureQuery = null): array
     {
         $schemaName = AuditSchema::ident($schema ?? config('pg-audit.schema'));
         $schema = AuditSchema::q($schemaName);
@@ -34,7 +34,15 @@ class AuditManager
         $logTable = $this->logTableName($quotedTable, $prefix);
         if ($logTable !== null) {
             $sql = AuditSchema::logTableStatements($schema, AuditSchema::q($logTable));
-            $args .= ", '".$logTable."'";
+        }
+
+        // 3º argumento 'q' liga a gravação do current_query() nesta tabela (a 2ª posição é a tabela de log, vazia = padrão).
+        $query = $this->shouldCaptureQuery($quotedTable, $captureQuery);
+        if ($logTable !== null || $query) {
+            $args .= ", '".($logTable ?? '')."'";
+        }
+        if ($query) {
+            $args .= ", 'q'";
         }
 
         $row = AuditSchema::q(AuditSchema::TRIGGER_ROW);
@@ -51,6 +59,28 @@ class AuditManager
         }
 
         return $sql;
+    }
+
+    /** Config global capture_query + lista capture_query_tables (vazia = todas); $override força por tabela. */
+    protected function shouldCaptureQuery(string $quotedTable, ?bool $override): bool
+    {
+        if (! AuditSchema::capturesQuery()) {
+            if ($override) {
+                throw new InvalidArgumentException('Defina pg-audit.capture_query = true (e rode pg-audit:upgrade em instalações antigas) antes de gravar a query.');
+            }
+
+            return false;
+        }
+
+        if ($override !== null) {
+            return $override;
+        }
+
+        $only = config('pg-audit.capture_query_tables', []);
+        $base = trim(Arr::last(explode('.', $quotedTable)), '"');
+        $qualified = str_replace('"', '', $quotedTable);
+
+        return $only === [] || in_array($base, $only, true) || in_array($qualified, $only, true);
     }
 
     /** Nome da tabela de log própria (prefixo + tabela) ou null para usar a tabela padrão. */
@@ -74,10 +104,10 @@ class AuditManager
         ];
     }
 
-    public function enable(string $table, array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $connection = null, ?string $prefix = null): void
+    public function enable(string $table, array $except = [], ?bool $truncate = null, ?string $schema = null, ?string $connection = null, ?string $prefix = null, ?bool $captureQuery = null): void
     {
         $db = $this->connection($connection);
-        foreach ($this->enableStatements($this->quoteTable($db, $table), $except, $truncate, $schema, $prefix) as $sql) {
+        foreach ($this->enableStatements($this->quoteTable($db, $table), $except, $truncate, $schema, $prefix, $captureQuery) as $sql) {
             $db->unprepared($sql);
         }
     }
@@ -91,7 +121,7 @@ class AuditManager
         }
 
         $c = $model->auditConfig();
-        $this->enable($c['table'], array_merge($c['except'], $except), $truncate, $c['schema'], $c['connection'], $c['prefix']);
+        $this->enable($c['table'], array_merge($c['except'], $except), $truncate, $c['schema'], $c['connection'], $c['prefix'], $c['capture_query']);
     }
 
     public function disable(string $table, ?string $connection = null): void
@@ -115,9 +145,9 @@ class AuditManager
         SQL, [AuditSchema::TRIGGER_ROW]);
 
         return array_map(function ($r) {
-            preg_match("/EXECUTE FUNCTION (?:(.+)\\.)?log_changes\\('([^']*)'(?:, '([^']*)')?\\)/", $r->def, $m);
+            preg_match("/EXECUTE FUNCTION (?:(.+)\\.)?log_changes\\('([^']*)'(?:, '([^']*)')?(?:, '([^']*)')?\\)/", $r->def, $m);
 
-            return ['table' => "{$r->schema}.{$r->table}", 'audit_schema' => trim($m[1] ?? '', '"') ?: '(search_path)', 'log_table' => $m[3] ?? config('pg-audit.table'), 'except' => $m[2] ?? ''];
+            return ['table' => "{$r->schema}.{$r->table}", 'audit_schema' => trim($m[1] ?? '', '"') ?: '(search_path)', 'log_table' => ($m[3] ?? '') ?: config('pg-audit.table'), 'captures_query' => ($m[4] ?? '') === 'q', 'except' => $m[2] ?? ''];
         }, $rows);
     }
 

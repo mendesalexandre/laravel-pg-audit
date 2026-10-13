@@ -54,6 +54,26 @@ fora de transação lança exceção.
 
 > **Instalações anteriores à pausa:** rode `php artisan pg-audit:upgrade` (recria a função do trigger e amplia a constraint de eventos). Os triggers existentes não mudam.
 
+## Gravar o SQL (`capture_query`)
+
+Opcional e **desligado por padrão**: grava o texto do SQL (`current_query()`) na coluna `query` (`consulta` em `pt_BR`).
+
+```php
+// config/pg-audit.php
+'capture_query' => true,
+'capture_query_tables' => ['orders'],   // vazio = todas as tabelas
+'query_max_length' => 2000,             // truncado
+```
+
+Por tabela: `$t->audit(captureQuery: true)`, `protected bool $auditCaptureQuery = true;` no model ou `pg-audit:enable orders --capture-query`.
+`pg-audit:status` mostra quais tabelas gravam a query.
+
+- Com o PDO padrão do Laravel o texto sai parametrizado: `update "orders" set "status" = $1 where "id" = $2` (os valores reais
+  continuam em `old_values`/`new_values`). Com `PDO::ATTR_EMULATE_PREPARES` ligado, os **valores vão embutidos no SQL** (e-mail, CPF...).
+- Um `UPDATE` em massa repete a mesma query em cada linha afetada.
+- `capture_query` cria a coluna: defina **antes** de instalar; em instalações antigas rode `pg-audit:upgrade`.
+  `capture_query_tables` vale na hora de habilitar o trigger: rode `pg-audit:enable` de novo ao mudar a lista.
+
 ## Configuração dentro do model (array `$auditExcept`)
 
 Em vez de repetir `--except` em cada comando ou migration, declare no model:
@@ -119,6 +139,7 @@ Colunas do log, com o padrão em inglês (`auditable_id`) e preset em português
 | user_id | `user_id` | `usuario_id` |
 | ip_address / user_agent / url | `ip_address` / `user_agent` / `url` | `ip` / `navegador` / `url` |
 | db_version (versão do PostgreSQL, ex. `18.6`) | `db_version` | `versao_banco` |
+| query (SQL, opcional) | `query` | `consulta` |
 | db_user / transaction_id | `db_user` / `transaction_id` | `usuario_banco` / `transacao_id` |
 | created_at | `created_at` | `criado_em` |
 

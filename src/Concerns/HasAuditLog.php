@@ -14,6 +14,7 @@ use MendesAlexandre\PgAudit\Support\Columns;
  *   protected string $auditSchema = 'audit_vendas';
  *   protected ?string $auditConnection = 'tenant';
  *   protected ?string $auditPrefix = 'audit_';
+ *   protected bool $auditCaptureQuery = true;                 // grava o SQL (requer capture_query na config)
  *   protected array $auditExcept = ['updated_at', 'views'];   // colunas fora do log
  *
  * Com isso: PgAudit::enableModel(Order::class) ou `php artisan pg-audit:enable "App\\Models\\Order"`.
@@ -41,6 +42,7 @@ trait HasAuditLog
             'schema' => $this->auditSchema ?? null,
             'prefix' => $this->auditPrefix ?? null,
             'connection' => $this->auditConnection ?? $this->getConnectionName(),
+            'capture_query' => $this->auditCaptureQuery ?? null,
         ];
     }
 }
