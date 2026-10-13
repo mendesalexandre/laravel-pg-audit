@@ -2,9 +2,11 @@
 
 namespace MendesAlexandre\PgAudit\Tests;
 
+use Illuminate\Container\Container;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use MendesAlexandre\PgAudit\AuditManager;
 use MendesAlexandre\PgAudit\Database\AuditSchema;
 use MendesAlexandre\PgAudit\Facades\PgAudit;
 use MendesAlexandre\PgAudit\Models\AuditLog;
@@ -281,6 +283,29 @@ class AuditTest extends TestCase
 
         $this->assertSame([null, '5', '9'], AuditLog::orderBy('id')->pluck('user_id')->all());
         $this->assertEmpty(DB::selectOne("select current_setting('audit.user_id', true) as v")->v);
+    }
+
+    public function test_transaction_mode_works_with_octane_style_cloned_container(): void
+    {
+        config(['pg-audit.context_mode' => 'transaction']);
+
+        // Octane atende cada request com um clone da aplicação (Container::setInstance) e zera os scoped.
+        // O listener de TransactionBeginning foi registrado no boot, na aplicação-base: ele precisa usar
+        // o AuditManager do container corrente, e não o do $this->app do provider.
+        $sandbox = clone $this->app;
+        Container::setInstance($sandbox);
+        $sandbox->forgetScopedInstances();
+
+        try {
+            $sandbox->make(AuditManager::class)->setContext(['user_id' => '11', 'url' => 'http://octane/x']);
+            DB::transaction(fn () => DB::table('posts')->insert(['title' => 'octane']));
+        } finally {
+            Container::setInstance($this->app);
+        }
+
+        $log = AuditLog::first();
+        $this->assertSame('11', $log->user_id);
+        $this->assertSame('http://octane/x', $log->url);
     }
 
     public function test_make_migration_generates_executable_schema_table_calls(): void

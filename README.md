@@ -149,6 +149,13 @@ PgAudit::actingAs($userId, fn () => $order->update([...]));
   em jobs/comandos use `PgAudit::actingAs($id, fn () => ...)`, que abre a transação sozinho nesse modo.
 - **Leitura/escrita separadas (`read`/`write`):** o contexto sempre é enviado pela conexão de escrita, onde o trigger roda.
 - **Octane/filas:** o gerenciador é `scoped` (zerado a cada request/job) e o middleware limpa o contexto no `terminate`.
+- **Octane (testado):** o Octane atende cada request com um *clone* da aplicação, então tudo que é registrado no `boot()` e
+  precisa do estado do request deve resolver o `AuditManager` pelo container corrente (`app(AuditManager::class)`), não por
+  `$this->app` do provider (que é a aplicação-base). O pacote já faz isso no listener de `TransactionBeginning`; se você
+  estender o pacote ou registrar listeners próprios, siga a mesma regra. Validado com Octane + FrankenPHP (8 workers),
+  PgBouncer em `pool_mode = transaction` e `PG_AUDIT_CONTEXT_MODE=transaction`: em 3 rodadas de 900 requests com 60 em
+  paralelo, todos os pedidos ficaram com o usuário e a URL corretos e nenhuma escrita ficou sem contexto. Com Octane não use
+  o modo `session` junto de PgBouncer em modo transaction. Teste de regressão: `test_transaction_mode_works_with_octane_style_cloned_container`.
 - **Custo:** o middleware faz 1 ida ao banco ao entrar e 1 ao sair. Se seus `GET` nunca gravam, `'skip_methods' => ['GET', 'HEAD', 'OPTIONS']` elimina isso.
 - **IP atrás de proxy (nginx/HAProxy):** configure `TrustProxies` no app, senão o IP gravado é o do proxy.
 
