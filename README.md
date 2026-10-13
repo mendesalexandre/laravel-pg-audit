@@ -118,6 +118,7 @@ Colunas do log, com o padrão em inglês (`auditable_id`) e preset em português
 | old_values / new_values | `old_values` / `new_values` | `valores_antigos` / `valores_novos` |
 | user_id | `user_id` | `usuario_id` |
 | ip_address / user_agent / url | `ip_address` / `user_agent` / `url` | `ip` / `navegador` / `url` |
+| db_version (versão do PostgreSQL, ex. `18.6`) | `db_version` | `versao_banco` |
 | db_user / transaction_id | `db_user` / `transaction_id` | `usuario_banco` / `transacao_id` |
 | created_at | `created_at` | `criado_em` |
 
@@ -126,6 +127,9 @@ Colunas do log, com o padrão em inglês (`auditable_id`) e preset em português
 'locale' => 'pt_BR',
 'columns' => ['row_id' => 'registro_id'],   // sobrescreve só uma coluna
 ```
+
+A versão do servidor (`18.6`) é gravada em cada linha; desligue com `'capture_db_version' => false`.
+Em instalações antigas, `php artisan pg-audit:upgrade` cria a coluna.
 
 Defina **antes** de instalar. Se mudar depois, gere a migration que renomeia as colunas existentes (mantém o histórico,
 cobre as tabelas por prefixo e recria a função do trigger):

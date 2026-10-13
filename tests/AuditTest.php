@@ -408,6 +408,38 @@ class AuditTest extends TestCase
         $this->assertSame(['P', 'R'], AuditLog::orderBy('id')->pluck('event')->all());
     }
 
+    public function test_db_version_is_captured_and_upgrade_adds_column(): void
+    {
+        $expected = explode(' ', DB::selectOne("select current_setting('server_version') as v")->v)[0];
+
+        DB::table('posts')->insert(['title' => 'v']);
+        PgAudit::withoutAuditing(fn () => null);
+        $this->assertSame([$expected, $expected, $expected], AuditLog::orderBy('id')->pluck('db_version')->all());
+
+        // instalação antiga: sem a coluna
+        DB::statement('ALTER TABLE audit.logged_actions DROP COLUMN db_version');
+        $this->artisan('pg-audit:upgrade')->assertSuccessful();
+        DB::table('posts')->insert(['title' => 'w']);
+        $this->assertSame($expected, AuditLog::latest('id')->first()->db_version);
+    }
+
+    public function test_db_version_can_be_disabled(): void
+    {
+        AuditSchema::down();
+        config(['pg-audit.capture_db_version' => false]);
+        AuditSchema::up();
+        Schema::dropIfExists('posts');
+        Schema::create('posts', function (Blueprint $t) {
+            $t->id();
+            $t->string('title');
+            $t->audit();
+        });
+        DB::table('posts')->insert(['title' => 'a']);
+
+        $this->assertFalse(Schema::hasColumn('audit.logged_actions', 'db_version'));
+        $this->assertSame(1, AuditLog::count());
+    }
+
     public function test_model_declares_except_array_and_enable_accepts_class(): void
     {
         PgAudit::disable('posts');

@@ -30,6 +30,15 @@ class AuditSchema
         self::createFunction($db, $schema, $table);
     }
 
+    /** Grava a versão do servidor PostgreSQL (ex.: 18.6) em cada linha? (config capture_db_version) */
+    public static function capturesVersion(): bool
+    {
+        return (bool) config('pg-audit.capture_db_version', true);
+    }
+
+    /** Expressão SQL da versão curta do servidor. */
+    public const VERSION_SQL = "split_part(current_setting('server_version'), ' ', 1)";
+
     public static function eventsSql(): string
     {
         return implode(',', array_map(fn ($e) => "'{$e}'", self::EVENTS));
@@ -59,6 +68,9 @@ class AuditSchema
         foreach ($tables as $t) {
             $name = self::checkName($t->table_name, $col['event']);
             $qualified = self::q($schemaName).'.'.self::q($t->table_name);
+            if (self::capturesVersion()) {
+                $db->unprepared("ALTER TABLE {$qualified} ADD COLUMN IF NOT EXISTS ".self::q($col['db_version']).' text');
+            }
             $db->unprepared("ALTER TABLE {$qualified} DROP CONSTRAINT IF EXISTS {$name}");
             $db->unprepared("ALTER TABLE {$qualified} ADD CONSTRAINT {$name} CHECK ({$col['event']} IN (".self::eventsSql().'))');
         }
@@ -84,8 +96,9 @@ class AuditSchema
         SQL, [$schemaName, $from['event'], $from['row_id']]);
 
         foreach ($tables as $t) {
+            $existing = array_column($db->select('SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?', [$schemaName, $t->table_name]), 'column_name');
             foreach ($from as $key => $old) {
-                if ($old !== ($to[$key] ?? $old)) {
+                if ($old !== ($to[$key] ?? $old) && in_array($old, $existing, true)) {
                     $db->unprepared('ALTER TABLE '.self::q($schemaName).'.'.self::q($t->table_name).' RENAME COLUMN '.self::q($old).' TO '.self::q(self::ident($to[$key])));
                 }
             }
@@ -106,6 +119,7 @@ class AuditSchema
         $c = array_map(fn ($n) => self::q($n), Columns::all());
         $events = self::eventsSql();
         $checkName = self::checkName($raw, Columns::get('event'));
+        $versionColumn = self::capturesVersion() ? "{$c['db_version']}     text,\n                " : '';
 
         return [
             <<<SQL
@@ -121,7 +135,7 @@ class AuditSchema
                 {$c['ip_address']}     text,
                 {$c['user_agent']}     text,
                 {$c['url']}            text,
-                {$c['db_user']}        text        NOT NULL DEFAULT session_user,
+                {$versionColumn}{$c['db_user']}        text        NOT NULL DEFAULT session_user,
                 {$c['transaction_id']} bigint      NOT NULL DEFAULT txid_current(),
                 {$c['created_at']}     timestamptz NOT NULL DEFAULT clock_timestamp()
             )
@@ -150,7 +164,17 @@ class AuditSchema
     {
         $literalSchema = trim($schema, '"');
         $col = $columns ?? Columns::all();
-        $names = implode(', ', [$col['schema'], $col['table'], $col['row_id'], $col['event'], $col['old_values'], $col['new_values'], $col['user_id'], $col['ip_address'], $col['user_agent'], $col['url']]);
+        $list = [$col['schema'], $col['table'], $col['row_id'], $col['event'], $col['old_values'], $col['new_values'], $col['user_id'], $col['ip_address'], $col['user_agent'], $col['url']];
+        $eventList = [$col['schema'], $col['table'], $col['event'], $col['new_values'], $col['user_id'], $col['ip_address'], $col['user_agent'], $col['url']];
+        $version = self::capturesVersion();
+        if ($version) {
+            $list[] = $eventList[] = $col['db_version'];
+        }
+        $names = implode(', ', $list);
+        $eventNames = implode(', ', $eventList);
+        $placeholders = implode(', ', array_map(fn ($i) => '$'.$i, range(1, count($list))));
+        $versionUsing = $version ? ",\n                    ".self::VERSION_SQL : '';
+        $versionValue = $version ? ",\n                    ".self::VERSION_SQL : '';
         $literalTable = trim($table, '"');
 
         $db->unprepared(<<<SQL
@@ -214,13 +238,13 @@ class AuditSchema
 
                 EXECUTE format(
                     'INSERT INTO %I.%I ({$names})
-                     VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10)',
+                     VALUES ({$placeholders})',
                     '{$literalSchema}', log_table)
                 USING TG_TABLE_SCHEMA, TG_TABLE_NAME, pk, left(TG_OP, 1), old_vals, new_vals,
                     NULLIF(current_setting('audit.user_id', true), ''),
                     NULLIF(current_setting('audit.ip_address', true), ''),
                     NULLIF(current_setting('audit.user_agent', true), ''),
-                    NULLIF(current_setting('audit.url', true), '');
+                    NULLIF(current_setting('audit.url', true), ''){$versionUsing};
 
                 RETURN NULL;
             END;
@@ -232,12 +256,12 @@ class AuditSchema
             CREATE OR REPLACE FUNCTION {$schema}.log_event(p_event char, p_subject text, p_details jsonb) RETURNS void
             LANGUAGE sql AS \$fn\$
                 INSERT INTO {$schema}.{$table}
-                    ({$col['schema']}, {$col['table']}, {$col['event']}, {$col['new_values']}, {$col['user_id']}, {$col['ip_address']}, {$col['user_agent']}, {$col['url']})
+                    ({$eventNames})
                 VALUES ('{$literalSchema}', p_subject, p_event, p_details,
                     NULLIF(current_setting('audit.user_id', true), ''),
                     NULLIF(current_setting('audit.ip_address', true), ''),
                     NULLIF(current_setting('audit.user_agent', true), ''),
-                    NULLIF(current_setting('audit.url', true), ''))
+                    NULLIF(current_setting('audit.url', true), ''){$versionValue})
             \$fn\$
         SQL);
     }

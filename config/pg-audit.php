@@ -32,6 +32,10 @@ return [
         // 'row_id' => 'registro_id',
     ],
 
+    // Grava a versão do servidor PostgreSQL (ex.: '18.6') em cada linha do log (coluna db_version / versao_banco).
+    // Instalações antigas: rode `php artisan pg-audit:upgrade` para criar a coluna.
+    'capture_db_version' => true,
+
     // Prefixo para tabela de log POR tabela auditada (ex.: 'audit_' => audit_orders, audit_order_items).
     // null = todas usam a tabela única `table` acima.
     'table_prefix' => null,
