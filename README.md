@@ -272,7 +272,28 @@ php artisan pg-audit:ddl-log status|disable|sql
 Não registra objetos do schema de auditoria, temporários ou de extensões. Em bancos gerenciados que não permitem event trigger,
 use só a versão do esquema. Instalações antigas: `php artisan pg-audit:upgrade`.
 
-### Valores reais na query só em algumas tabelas (`withLiteralQueries`)
+### Valores reais na query só em algumas tabelas
+
+**Pelo model (um trait, sem closure):**
+
+```php
+use MendesAlexandre\PgAudit\Concerns\HasAuditLog;
+use MendesAlexandre\PgAudit\Concerns\WithLiteralQueries;
+
+class Customer extends Model
+{
+    use HasAuditLog, WithLiteralQueries;
+}
+
+Customer::create(['name' => 'Ana']);          // insert into "customers" ("name") values ('Ana') returning "id"
+$customer->update(['cpf' => '123']);          // update "customers" set "cpf" = '123' where "id" = 1
+```
+Vale para `create/save/update/delete` do próprio model; não cobre `Customer::query()->update([...])` em massa nem `DB::table()`
+(use o closure abaixo). **Trava de segurança:** se a gravação inclui uma coluna de `global_except` (password, remember_token), do `$auditExcept`
+do model ou de `protected array $literalQueryExcept = [...]`, aquela gravação continua parametrizada.
+
+**Por bloco (qualquer código):**
+
 `capture_query` grava a query como o PostgreSQL a recebe: com o PDO padrão, `update "orders" set "total" = $1 where "id" = $2`.
 Os valores reais só entram no texto com `ATTR_EMULATE_PREPARES` (ver acima). Em vez de ligar globalmente, ligue **só ao gravar em
 tabelas sem dados sensíveis**:
@@ -285,6 +306,34 @@ O atributo é ligado só na conexão de escrita e restaurado ao fim (mesmo com e
 Combine com `capture_query_tables` para que só as tabelas liberadas gravem a query. Atenção: com prepares emulados os valores aparecem
 também no log do servidor e no `pg_stat_activity`, e as colunas em `except` **não** são mascaradas no texto; por isso use só em tabelas sem senha/token.
 `pg-audit:status` avisa quando `capture_query` está ligado e o PDO emula prepares.
+
+## Restaurar um delete (ou desfazer um update)
+
+O `DELETE` grava a linha inteira em `old_values`, então dá para trazê-la de volta. O `UPDATE` grava os valores antigos das colunas que mudaram.
+
+```bash
+php artisan pg-audit:deleted --table=users --user=42 --since="2 hours ago"   # acha o que foi apagado, quem e quando
+php artisan pg-audit:restore 123 --dry-run                                    # mostra o SQL, não grava nada
+php artisan pg-audit:restore 123                                              # pergunta e restaura a linha do log 123
+php artisan pg-audit:restore --table=users --record=7                         # o DELETE mais recente dessa linha
+php artisan pg-audit:restore --transaction=661524 --dry-run                   # cascata: tudo o que a transação apagou
+php artisan pg-audit:restore --transaction=661524 --user=1                    # tudo-ou-nada; quem restaurou fica no log
+```
+
+```php
+$log = AuditLog::deletions()->forRecord('users', 7)->latest('id')->first();
+$log->restore(dryRun: true);                       // ['sql' => 'insert into ...', 'skipped_columns' => [], 'done' => false]
+$log->restore(['password' => $hashNovo]);          // reinsere com o mesmo id e dados
+```
+
+- **Colunas em `except` (senha, token) nunca foram gravadas**, de propósito. Se forem `NOT NULL`, o restore falha com o nome da coluna:
+  informe com `--set=password=...` (ou `--set=users.password=...` para uma tabela só / `$log->restore([...])`). Sem `NOT NULL`, ficam no default/NULL.
+- **Cascata:** `--transaction` restaura todos os `DELETE` da transação na ordem em que foram feitos; violação de chave estrangeira é repetida
+  numa nova passada, e se algo falhar (ex.: a linha já foi recriada por outra pessoa) **nada** é restaurado. A restauração também é auditada.
+- A linha volta com o **mesmo id** (a sequence não é alterada). Se o id já existe, o restore falha e não duplica.
+- Se o esquema mudou desde o delete (coluna removida/renomeada), as colunas que não existem mais são ignoradas e listadas; compare com a
+  `schema_version` da linha do log e com `schema_changes`. Coluna nova `NOT NULL` sem default precisa de `--set`.
+- `UPDATE` restaura só as colunas que mudaram; `INSERT` não se restaura (apague a linha); `TRUNCATE` não é restaurável por aqui.
 
 ## O que foi alterado, com os valores reais
 

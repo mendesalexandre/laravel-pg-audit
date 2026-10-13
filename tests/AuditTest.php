@@ -471,6 +471,192 @@ class AuditTest extends TestCase
         });
     }
 
+    public function test_restore_reinserts_a_deleted_row_and_dry_run_writes_nothing(): void
+    {
+        $id = DB::table('posts')->insertGetId(['title' => "O'Brien"]);
+        DB::table('posts')->where('id', $id)->delete();
+        $log = AuditLog::deletions()->latest('id')->first();
+
+        $dry = $log->restore(dryRun: true);
+        $this->assertSame("insert into \"public\".\"posts\" (\"id\", \"title\") values ({$id}, 'O''Brien')", $dry['sql']);
+        $this->assertFalse($dry['done']);
+        $this->assertSame(0, DB::table('posts')->count());
+
+        $log->restore();
+        $this->assertSame("O'Brien", DB::table('posts')->find($id)->title);       // mesmo id e dados
+
+        $this->expectException(\Illuminate\Database\UniqueConstraintViolationException::class);
+        $log->restore();                                                          // já existe: não duplica
+    }
+
+    public function test_restore_asks_for_columns_that_were_never_logged(): void
+    {
+        Schema::dropIfExists('accounts');
+        Schema::create('accounts', function (Blueprint $t) {
+            $t->id();
+            $t->string('name');
+            $t->string('senha');                         // NOT NULL e fora do log
+            $t->audit(except: ['senha']);
+        });
+        $id = DB::table('accounts')->insertGetId(['name' => 'ana', 'senha' => 'HASH-ORIGINAL']);
+        DB::table('accounts')->where('id', $id)->delete();
+        $log = AuditLog::forTable("accounts")->deletions()->first();
+
+        $this->assertArrayNotHasKey('senha', $log->valores_antigos ?? $log->old_values);
+        try {
+            $log->restore();
+            $this->fail('senha é NOT NULL e não está no log');
+        } catch (\Illuminate\Database\QueryException $e) {
+            $this->assertStringContainsString('senha', $e->getMessage());
+        }
+        $this->assertSame(0, DB::table('accounts')->count());
+
+        $log->restore(['senha' => 'NOVO-HASH']);
+        $this->assertSame('NOVO-HASH', DB::table('accounts')->find($id)->senha);
+        Schema::dropIfExists('accounts');
+    }
+
+    public function test_restore_update_puts_old_values_back_and_insert_is_not_restorable(): void
+    {
+        $id = DB::table('posts')->insertGetId(['title' => 'antes']);
+        DB::table('posts')->where('id', $id)->update(['title' => 'depois']);
+
+        AuditLog::action('U')->latest('id')->first()->restore();
+        $this->assertSame('antes', DB::table('posts')->find($id)->title);
+
+        $this->expectException(\LogicException::class);
+        AuditLog::action('I')->first()->restore();
+    }
+
+    public function test_restore_transaction_brings_back_cascade_parent_and_children_atomically(): void
+    {
+        Schema::dropIfExists('filhos');
+        Schema::dropIfExists('pais');
+        Schema::create('pais', function (Blueprint $t) { $t->id(); $t->string('nome'); $t->audit(); });
+        Schema::create('filhos', function (Blueprint $t) {
+            $t->id();
+            $t->foreignId('pai_id')->constrained('pais')->cascadeOnDelete();
+            $t->string('item');
+            $t->audit();
+        });
+        $pai = DB::table('pais')->insertGetId(['nome' => 'Maria']);
+        DB::table('filhos')->insert([['pai_id' => $pai, 'item' => 'a'], ['pai_id' => $pai, 'item' => 'b']]);
+
+        PgAudit::actingAs(42, fn () => DB::table('pais')->where('id', $pai)->delete());      // apaga o pai e, em cascata, os filhos
+        $tx = AuditLog::deletions()->latest('id')->first()->transaction_id;
+        $this->assertSame(0, DB::table('filhos')->count());
+
+        $plan = app(\MendesAlexandre\PgAudit\Support\Restorer::class)->restoreTransaction($tx, dryRun: true);
+        $this->assertCount(3, $plan);
+        $this->assertSame(0, DB::table('pais')->count());
+
+        $done = app(\MendesAlexandre\PgAudit\Support\Restorer::class)->restoreTransaction($tx);
+        $this->assertCount(3, $done);
+        $this->assertSame(1, DB::table('pais')->count());
+        $this->assertSame(['a', 'b'], DB::table('filhos')->orderBy('id')->pluck('item')->all());
+
+        // a restauração também é auditada
+        $this->assertSame(3, AuditLog::action('I')->whereIn('auditable_table', ['pais', 'filhos'])->count() - 3);
+        Schema::dropIfExists('filhos');
+        Schema::dropIfExists('pais');
+    }
+
+    public function test_restore_transaction_retries_foreign_key_order_and_rolls_back_all_on_failure(): void
+    {
+        Schema::dropIfExists('filhos');
+        Schema::dropIfExists('pais');
+        Schema::create('pais', function (Blueprint $t) { $t->id(); $t->string('nome'); $t->audit(); });
+        Schema::create('filhos', function (Blueprint $t) {
+            $t->id();
+            $t->foreignId('pai_id')->constrained('pais');
+            $t->string('item');
+            $t->audit();
+        });
+        $pai = DB::table('pais')->insertGetId(['nome' => 'Maria']);
+        $filho = DB::table('filhos')->insertGetId(['pai_id' => $pai, 'item' => 'a']);
+
+        // filho é apagado ANTES do pai: o log está na ordem filho, pai; restaurar na ordem do log também funciona
+        DB::transaction(function () use ($pai, $filho) {
+            DB::table('filhos')->where('id', $filho)->delete();
+            DB::table('pais')->where('id', $pai)->delete();
+        });
+        $tx = AuditLog::deletions()->latest('id')->first()->transaction_id;
+        $restorer = app(\MendesAlexandre\PgAudit\Support\Restorer::class);
+
+        // conflito no meio: o pai já foi recriado por outra pessoa -> nada é restaurado (tudo-ou-nada)
+        DB::table('pais')->insert(['id' => $pai, 'nome' => 'recriado']);
+        try {
+            $restorer->restoreTransaction($tx);
+            $this->fail('deveria falhar por chave duplicada');
+        } catch (\Illuminate\Database\UniqueConstraintViolationException) {
+        }
+        $this->assertSame(0, DB::table('filhos')->count());
+
+        DB::table('pais')->where('id', $pai)->delete();
+        $restorer->restoreTransaction($tx);
+        $this->assertSame(1, DB::table('filhos')->count());
+        Schema::dropIfExists('filhos');
+        Schema::dropIfExists('pais');
+    }
+
+    public function test_deleted_and_restore_commands(): void
+    {
+        $id = DB::table('posts')->insertGetId(['title' => 'apagado sem querer']);
+        PgAudit::actingAs(7, fn () => DB::table('posts')->where('id', $id)->delete());
+        $logId = AuditLog::deletions()->latest('id')->first()->id;
+
+        $this->artisan('pg-audit:deleted', ['--table' => 'posts', '--user' => 7])->expectsOutputToContain('apagado sem querer')->assertSuccessful();
+        $this->artisan('pg-audit:restore', ['id' => $logId, '--dry-run' => true])->expectsOutputToContain('insert into "public"."posts"')->assertSuccessful();
+        $this->assertSame(0, DB::table('posts')->count());
+
+        $this->artisan('pg-audit:restore', ['--table' => 'posts', '--record' => $id, '--force' => true, '--user' => 99])->assertSuccessful();
+        $this->assertSame('apagado sem querer', DB::table('posts')->find($id)->title);
+        $this->assertSame('99', AuditLog::action('I')->latest('id')->first()->user_id);   // quem restaurou fica registrado
+    }
+
+    public function test_model_trait_embeds_values_without_wrapping_and_keeps_sensitive_writes_parameterized(): void
+    {
+        AuditSchema::down();
+        config(['pg-audit.capture_query' => true, 'pg-audit.query_max_length' => 300]);
+        AuditSchema::up();
+        Schema::dropIfExists('lit_items');
+        Schema::create('lit_items', function (Blueprint $t) {
+            $t->id();
+            $t->string('nome');
+            $t->string('senha')->nullable();
+            $t->audit(except: ['senha'], captureQuery: true);
+        });
+        $manager = app(AuditManager::class);
+
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \MendesAlexandre\PgAudit\Concerns\WithLiteralQueries;
+
+            protected $table = 'lit_items';
+            public $timestamps = false;
+            protected $guarded = [];
+            protected array $auditExcept = ['senha'];
+        };
+
+        $item = $model->newQuery()->create(['nome' => "O'Brien"]);
+        $item->update(['nome' => 'Novo nome']);
+        $this->assertFalse($manager->emulatesPrepares());                  // restaurado depois de cada gravação
+
+        $item->update(['nome' => 'Com senha', 'senha' => 'HASH-SECRETO']);   // inclui coluna sensível: continua parametrizado
+        $item->delete();
+
+        $q = AuditLog::forTable('lit_items')->orderBy('id')->pluck('query')->all();
+        $this->assertSame('insert into "lit_items" ("nome") values (\'O\'\'Brien\') returning "id"', $q[0]);
+        $this->assertSame('update "lit_items" set "nome" = \'Novo nome\' where "id" = 1', $q[1]);
+        $this->assertSame('update "lit_items" set "nome" = $1, "senha" = $2 where "id" = $3', $q[2]);
+        $this->assertSame('delete from "lit_items" where "id" = 1', $q[3]);
+        $this->assertStringNotContainsString('HASH-SECRETO', implode(' ', $q));
+
+        // fora do model (Query Builder), o PDO segue padrão
+        DB::table('lit_items')->insert(['nome' => 'qb']);
+        $this->assertStringContainsString('$1', AuditLog::forTable('lit_items')->orderByDesc('id')->first()->query);
+        Schema::dropIfExists('lit_items');
+    }
+
     public function test_make_migration_generates_executable_schema_table_calls(): void
     {
         $dir = database_path('migrations');

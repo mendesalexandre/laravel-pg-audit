@@ -139,6 +139,22 @@ class AuditLog extends Model
         };
     }
 
+    /**
+     * Restaura a partir desta linha: DELETE reinsere a linha; UPDATE devolve os valores antigos.
+     * $set preenche colunas que não foram gravadas (as de `except`, como senha). $dryRun só devolve o SQL.
+     *
+     * @return array{sql: string, skipped_columns: array, done: bool}
+     */
+    public function restore(array $set = [], bool $dryRun = false): array
+    {
+        return app(\MendesAlexandre\PgAudit\Support\Restorer::class)->restoreRow($this, $set, $dryRun);
+    }
+
+    public function scopeDeletions(Builder $q): Builder
+    {
+        return $q->where(Columns::get('event'), 'D');
+    }
+
     public function getActionNameAttribute(): string
     {
         return ['I' => 'created', 'U' => 'updated', 'D' => 'deleted', 'T' => 'truncated', 'P' => 'paused', 'R' => 'resumed'][$this->{Columns::get('event')}] ?? $this->{Columns::get('event')};
