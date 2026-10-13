@@ -151,6 +151,91 @@ class AuditManager
         }, $rows);
     }
 
+    /**
+     * Grava a versão do esquema (e a versão do PostgreSQL) na tabela de estado lida pelo trigger.
+     * Sem $version: config "schema_version" ou, se vazia, o nome da última migration aplicada.
+     */
+    public function recordSchemaVersion(?string $version = null, ?string $connection = null): ?string
+    {
+        $db = $this->connection($connection);
+        $version ??= config('pg-audit.schema_version') ?: $this->latestMigration($db);
+
+        $state = AuditSchema::q(AuditSchema::ident(config('pg-audit.schema'))).'.'.AuditSchema::q(AuditSchema::STATE_TABLE);
+        $db->statement(
+            "INSERT INTO {$state} (id, version, pg_version, updated_at) VALUES (true, ?, current_setting('server_version'), clock_timestamp())
+             ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, pg_version = EXCLUDED.pg_version, updated_at = EXCLUDED.updated_at",
+            [$version]
+        );
+
+        return $version;
+    }
+
+    /** Estado atual: version, pg_version, updated_at (ou null se a tabela de estado não existir). */
+    public function schemaState(?string $connection = null): ?object
+    {
+        $db = $this->connection($connection);
+        $state = AuditSchema::q(AuditSchema::ident(config('pg-audit.schema'))).'.'.AuditSchema::q(AuditSchema::STATE_TABLE);
+        if (! $db->selectOne('SELECT to_regclass(?) IS NOT NULL AS ok', [$state])->ok) {
+            return null;
+        }
+
+        return $db->selectOne("SELECT version, pg_version, updated_at FROM {$state} LIMIT 1");
+    }
+
+    protected function latestMigration(Connection $db): ?string
+    {
+        $table = config('database.migrations.table', config('database.migrations', 'migrations'));
+        if (is_array($table)) {
+            $table = $table['table'] ?? 'migrations';
+        }
+
+        return $db->selectOne('SELECT to_regclass(?) IS NOT NULL AS ok', [$table])->ok
+            ? $db->table($table)->orderByDesc('id')->value('migration')
+            : null;
+    }
+
+    /** Marca na sessão qual migration está rodando (lido pelo event trigger de DDL). */
+    public function setMigration(?string $name, ?string $connection = null): void
+    {
+        $this->connection($connection)->select("select set_config('audit.migration', ?, false)", [(string) $name], false);
+    }
+
+    /** Nome do arquivo da migration (também para classes anônimas, cujo nome da classe contém o caminho). */
+    public static function migrationName(object $migration): string
+    {
+        $class = get_class($migration);
+        if (preg_match('/(\d{4}_\d{2}_\d{2}_\d{6}_[A-Za-z0-9_]+)\.php/', $class, $m)) {
+            return $m[1];
+        }
+
+        return class_basename($class);
+    }
+
+    /**
+     * Executa $callback com ATTR_EMULATE_PREPARES ligado só nesta conexão (e só na sessão de escrita), restaurando depois.
+     * Com prepares emulados o SQL gravado por capture_query leva os valores reais em vez de $1, $2. Use apenas ao gravar
+     * em tabelas SEM dados sensíveis: os valores também aparecem no log do servidor e no pg_stat_activity, e as colunas
+     * em `except` NÃO são mascaradas no texto da query.
+     */
+    public function withLiteralQueries(Closure $callback, ?string $connection = null): mixed
+    {
+        $pdo = $this->connection($connection)->getPdo();
+        $previous = $pdo->getAttribute(\PDO::ATTR_EMULATE_PREPARES);
+        $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
+
+        try {
+            return $callback();
+        } finally {
+            $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, $previous);
+        }
+    }
+
+    /** O PDO desta conexão (escrita) está com prepares emulados? */
+    public function emulatesPrepares(?string $connection = null): bool
+    {
+        return (bool) $this->connection($connection)->getPdo()->getAttribute(\PDO::ATTR_EMULATE_PREPARES);
+    }
+
     /** Contexto em memória por conexão (escopo do request/job). */
     protected array $context = [];
 

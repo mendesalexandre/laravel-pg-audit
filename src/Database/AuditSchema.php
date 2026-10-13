@@ -11,6 +11,13 @@ class AuditSchema
 
     public const TRIGGER_TRUNCATE = 'audit_trigger_stm';
 
+    /** Tabela de estado (1 linha) com a versão do esquema e do PostgreSQL, lida pelo trigger. */
+    public const STATE_TABLE = 'schema_state';
+
+    public const EVENT_TRIGGER_END = 'pg_audit_ddl_end';
+
+    public const EVENT_TRIGGER_DROP = 'pg_audit_ddl_drop';
+
     /** I/U/D/T = operações; P/R = auditoria pausada/retomada. */
     public const EVENTS = ['I', 'U', 'D', 'T', 'P', 'R'];
 
@@ -27,7 +34,15 @@ class AuditSchema
             $db->unprepared($sql);
         }
 
+        self::createSupportTables($db, $schema);
         self::createFunction($db, $schema, $table);
+        self::createDdlFunctions($db, $schema);
+    }
+
+    /** Grava a versão do esquema (schema_state) em cada linha? (config capture_schema_version) */
+    public static function capturesSchemaVersion(): bool
+    {
+        return (bool) config('pg-audit.capture_schema_version', true);
     }
 
     /** Grava a versão do servidor PostgreSQL (ex.: 18.6) em cada linha? (config capture_db_version) */
@@ -44,6 +59,54 @@ class AuditSchema
 
     /** Expressão SQL da versão curta do servidor. */
     public const VERSION_SQL = "split_part(current_setting('server_version'), ' ', 1)";
+
+    /** Tabela de estado (versão do esquema/PostgreSQL) e tabela do histórico de DDL. Idempotente. */
+    public static function createSupportTables($db, string $quotedSchema, ?array $ddlNames = null): void
+    {
+        $state = self::q(self::STATE_TABLE);
+        $db->unprepared(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$quotedSchema}.{$state} (
+                id         boolean PRIMARY KEY DEFAULT true CHECK (id),
+                version    text,
+                pg_version text,
+                updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+            )
+        SQL);
+        $db->unprepared("INSERT INTO {$quotedSchema}.{$state} (id, version, pg_version) VALUES (true, NULL, current_setting('server_version')) ON CONFLICT (id) DO NOTHING");
+
+        $d = array_map(fn ($n) => self::q($n), $ddlNames ?? Columns::ddl());
+        $ddl = self::q(self::ident(config('pg-audit.ddl_table', 'schema_changes')));
+        $db->unprepared(<<<SQL
+            CREATE TABLE IF NOT EXISTS {$quotedSchema}.{$ddl} (
+                {$d['id']}             bigserial PRIMARY KEY,
+                {$d['executed_at']}    timestamptz NOT NULL DEFAULT clock_timestamp(),
+                {$d['db_user']}        text        NOT NULL DEFAULT session_user,
+                {$d['user_id']}        text,
+                {$d['command']}        text        NOT NULL,
+                {$d['object_type']}    text,
+                {$d['object']}         text,
+                {$d['schema']}         text,
+                {$d['query']}          text,
+                {$d['migration']}      text,
+                {$d['schema_version']} text,
+                {$d['pg_version']}     text
+            )
+        SQL);
+        $db->unprepared('CREATE INDEX IF NOT EXISTS '.self::q(substr(trim($ddl, '"').'_at_idx', 0, 63))." ON {$quotedSchema}.{$ddl} ({$d['executed_at']})");
+        $db->unprepared('CREATE INDEX IF NOT EXISTS '.self::q(substr(trim($ddl, '"').'_obj_idx', 0, 63))." ON {$quotedSchema}.{$ddl} ({$d['object']})");
+    }
+
+    /** Nomes das colunas de DDL correspondentes a um conjunto de nomes das colunas de log (pelo preset de idioma). */
+    protected static function ddlNamesFor(array $logColumns, bool $withOverrides): array
+    {
+        foreach (Columns::PRESETS as $locale => $preset) {
+            if (($logColumns['created_at'] ?? null) === $preset['created_at'] && ($logColumns['event'] ?? null) === $preset['event']) {
+                return $withOverrides ? array_merge(Columns::DDL_PRESETS[$locale], config('pg-audit.ddl_columns', [])) : Columns::DDL_PRESETS[$locale];
+            }
+        }
+
+        return Columns::ddl();
+    }
 
     public static function eventsSql(): string
     {
@@ -77,6 +140,9 @@ class AuditSchema
             if (self::capturesVersion()) {
                 $db->unprepared("ALTER TABLE {$qualified} ADD COLUMN IF NOT EXISTS ".self::q($col['db_version']).' text');
             }
+            if (self::capturesSchemaVersion()) {
+                $db->unprepared("ALTER TABLE {$qualified} ADD COLUMN IF NOT EXISTS ".self::q($col['schema_version']).' text');
+            }
             if (self::capturesQuery()) {
                 $db->unprepared("ALTER TABLE {$qualified} ADD COLUMN IF NOT EXISTS ".self::q($col['query']).' text');
             }
@@ -84,7 +150,9 @@ class AuditSchema
             $db->unprepared("ALTER TABLE {$qualified} ADD CONSTRAINT {$name} CHECK ({$col['event']} IN (".self::eventsSql().'))');
         }
 
+        self::createSupportTables($db, self::q($schemaName));
         self::createFunction($db, self::q($schemaName), self::q(self::ident($table ?? config('pg-audit.table'))));
+        self::createDdlFunctions($db, self::q($schemaName));
     }
 
     /**
@@ -113,7 +181,22 @@ class AuditSchema
             }
         }
 
+        // tabela de DDL: acompanha o idioma dos nomes das colunas de log (origem/destino inferidos dos presets)
+        $ddlFrom = self::ddlNamesFor($from, false);
+        $ddlTo = self::ddlNamesFor($to, true);
+        $ddlTable = self::ident(config('pg-audit.ddl_table', 'schema_changes'));
+        $ddlExisting = array_map(fn ($c) => $c->column_name, $db->select(
+            'SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?', [$schemaName, $ddlTable]
+        ));
+        foreach ($ddlFrom as $key => $old) {
+            if ($old !== $ddlTo[$key] && in_array($old, $ddlExisting, true)) {
+                $db->unprepared('ALTER TABLE '.self::q($schemaName).'.'.self::q($ddlTable).' RENAME COLUMN '.self::q($old).' TO '.self::q($ddlTo[$key]));
+            }
+        }
+        $quotedDdlTo = array_map(fn ($n) => self::q($n), $ddlTo);
+        self::createSupportTables($db, self::q($schemaName), $ddlTo);
         self::createFunction($db, self::q($schemaName), self::q(self::ident($table ?? config('pg-audit.table'))), $to);
+        self::createDdlFunctions($db, self::q($schemaName), $quotedDdlTo);
     }
 
     /**
@@ -129,6 +212,7 @@ class AuditSchema
         $events = self::eventsSql();
         $checkName = self::checkName($raw, Columns::get('event'));
         $versionColumn = self::capturesVersion() ? "{$c['db_version']}     text,\n                " : '';
+        $versionColumn .= self::capturesSchemaVersion() ? "{$c['schema_version']} text,\n                " : '';
         $queryColumn = self::capturesQuery() ? "{$c['query']}          text,\n                " : '';
 
         return [
@@ -180,10 +264,16 @@ class AuditSchema
         if ($version) {
             $list[] = $eventList[] = $col['db_version'];
         }
+        $schemaVersion = self::capturesSchemaVersion();
+        if ($schemaVersion) {
+            $list[] = $eventList[] = $col['schema_version'];
+        }
         $query = self::capturesQuery();
         if ($query) {
             $list[] = $col['query'];
         }
+        $stateTable = self::q(self::STATE_TABLE);
+        $schemaVersionValue = $schemaVersion ? ",\n                    (SELECT version FROM {$schema}.{$stateTable} LIMIT 1)" : '';
         $queryUsing = $query ? ",\n                    CASE WHEN capture_q THEN left(current_query(), ".max(1, (int) config('pg-audit.query_max_length', 2000)).') END' : '';
         $names = implode(', ', $list);
         $eventNames = implode(', ', $eventList);
@@ -260,7 +350,7 @@ class AuditSchema
                     NULLIF(current_setting('audit.user_id', true), ''),
                     NULLIF(current_setting('audit.ip_address', true), ''),
                     NULLIF(current_setting('audit.user_agent', true), ''),
-                    NULLIF(current_setting('audit.url', true), ''){$versionUsing}{$queryUsing};
+                    NULLIF(current_setting('audit.url', true), ''){$versionUsing}{$schemaVersionValue}{$queryUsing};
 
                 RETURN NULL;
             END;
@@ -277,9 +367,91 @@ class AuditSchema
                     NULLIF(current_setting('audit.user_id', true), ''),
                     NULLIF(current_setting('audit.ip_address', true), ''),
                     NULLIF(current_setting('audit.user_agent', true), ''),
-                    NULLIF(current_setting('audit.url', true), ''){$versionValue})
+                    NULLIF(current_setting('audit.url', true), ''){$versionValue}{$schemaVersionValue})
             \$fn\$
         SQL);
+    }
+
+    /**
+     * Funções dos event triggers de DDL. SECURITY DEFINER: quem roda o DDL não precisa de permissão no schema de auditoria.
+     * Não registra objetos do próprio schema de auditoria, temporários, nem de extensões.
+     */
+    public static function createDdlFunctions($db, string $schema, ?array $names = null): void
+    {
+        $literalSchema = trim($schema, '"');
+        $d = $names ?? array_map(fn ($n) => self::q($n), Columns::ddl());
+        $ddl = self::q(self::ident(config('pg-audit.ddl_table', 'schema_changes')));
+        $state = self::q(self::STATE_TABLE);
+        $cols = implode(', ', [$d['db_user'], $d['user_id'], $d['command'], $d['object_type'], $d['object'], $d['schema'], $d['query'], $d['migration'], $d['schema_version'], $d['pg_version']]);
+        $ctx = "NULLIF(current_setting('audit.user_id', true), ''), %s, r.object_type, r.object_identity, r.schema_name, current_query(), NULLIF(current_setting('audit.migration', true), ''), ver, current_setting('server_version')";
+
+        $insert = fn (string $tag) => "INSERT INTO {$schema}.{$ddl} ({$cols}) VALUES (session_user, ".sprintf($ctx, $tag).')';
+
+        $db->unprepared(<<<SQL
+            CREATE OR REPLACE FUNCTION {$schema}.log_ddl() RETURNS event_trigger
+            LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS \$fn\$
+            DECLARE r record; ver text;
+            BEGIN
+                SELECT version INTO ver FROM {$schema}.{$state} LIMIT 1;
+                FOR r IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
+                    CONTINUE WHEN r.in_extension OR r.schema_name IS NOT DISTINCT FROM '{$literalSchema}' OR r.schema_name LIKE 'pg\_temp%';
+                    {$insert('r.command_tag')};
+                END LOOP;
+            END;
+            \$fn\$
+        SQL);
+
+        $db->unprepared(<<<SQL
+            CREATE OR REPLACE FUNCTION {$schema}.log_ddl_drop() RETURNS event_trigger
+            LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS \$fn\$
+            DECLARE r record; ver text;
+            BEGIN
+                SELECT version INTO ver FROM {$schema}.{$state} LIMIT 1;
+                FOR r IN SELECT * FROM pg_event_trigger_dropped_objects() WHERE original AND NOT is_temporary LOOP
+                    CONTINUE WHEN r.schema_name IS NOT DISTINCT FROM '{$literalSchema}';
+                    {$insert('tg_tag')};
+                END LOOP;
+            END;
+            \$fn\$
+        SQL);
+    }
+
+    /** SQL dos event triggers (para um superusuário rodar, se o app não for). */
+    public static function ddlLogStatements(?string $schema = null): array
+    {
+        $s = self::q(self::ident($schema ?? config('pg-audit.schema')));
+
+        return [
+            'DROP EVENT TRIGGER IF EXISTS '.self::EVENT_TRIGGER_END,
+            'DROP EVENT TRIGGER IF EXISTS '.self::EVENT_TRIGGER_DROP,
+            'CREATE EVENT TRIGGER '.self::EVENT_TRIGGER_END." ON ddl_command_end EXECUTE FUNCTION {$s}.log_ddl()",
+            'CREATE EVENT TRIGGER '.self::EVENT_TRIGGER_DROP." ON sql_drop EXECUTE FUNCTION {$s}.log_ddl_drop()",
+        ];
+    }
+
+    /** Liga o histórico de DDL. Exige superusuário. */
+    public static function enableDdlLog(?string $connection = null, ?string $schema = null): void
+    {
+        $db = DB::connection($connection ?? config('pg-audit.connection'));
+        $q = self::q(self::ident($schema ?? config('pg-audit.schema')));
+        self::createSupportTables($db, $q);
+        self::createDdlFunctions($db, $q);
+        foreach (self::ddlLogStatements($schema) as $sql) {
+            $db->unprepared($sql);
+        }
+    }
+
+    public static function disableDdlLog(?string $connection = null): void
+    {
+        $db = DB::connection($connection ?? config('pg-audit.connection'));
+        $db->unprepared('DROP EVENT TRIGGER IF EXISTS '.self::EVENT_TRIGGER_END);
+        $db->unprepared('DROP EVENT TRIGGER IF EXISTS '.self::EVENT_TRIGGER_DROP);
+    }
+
+    public static function ddlLogEnabled(?string $connection = null): bool
+    {
+        return (bool) DB::connection($connection ?? config('pg-audit.connection'))
+            ->selectOne('SELECT count(*) > 0 AS on FROM pg_event_trigger WHERE evtname IN (?, ?)', [self::EVENT_TRIGGER_END, self::EVENT_TRIGGER_DROP])->on;
     }
 
     /** Valida nome simples de schema/tabela (letras, números e _). */

@@ -246,6 +246,46 @@ PgAudit::actingAs($userId, fn () => $order->update([...]));
 - **Custo:** o middleware faz 1 ida ao banco ao entrar e 1 ao sair. Se seus `GET` nunca gravam, `'skip_methods' => ['GET', 'HEAD', 'OPTIONS']` elimina isso.
 - **IP atrás de proxy (nginx/HAProxy):** configure `TrustProxies` no app, senão o IP gravado é o do proxy.
 
+## Versão do esquema e histórico de DDL
+
+Para interpretar o log depois de migrations (um `RENAME`/`ALTER TYPE` muda o formato do JSON antigo).
+
+### Versão do esquema em cada linha (`schema_version` / `versao_schema`)
+A versão fica numa tabela de 1 linha (`audit.schema_state`) que o trigger consulta; por isso vale **também para quem escreve
+fora do app** (psql, outros sistemas) e não custa nenhuma ida ao banco por request. Ao fim do `php artisan migrate` o pacote grava
+a última migration aplicada. Para usar o SHA do deploy: `PG_AUDIT_SCHEMA_VERSION=...` ou `php artisan pg-audit:version <valor>`.
+Desligue a coluna com `'capture_schema_version' => false`.
+
+```bash
+php artisan pg-audit:version            # mostra versão do esquema, versão do PostgreSQL e quando mudou
+php artisan pg-audit:version --record   # grava a configurada (ou a última migration)
+```
+
+### Histórico de DDL (`audit.schema_changes`)
+Um *event trigger* registra cada `ALTER`/`CREATE`/`DROP` (inclui `DROP COLUMN`), com quem rodou (`db_user`, `user_id` do contexto), o texto
+do comando, a migration em andamento, a versão do esquema e a **versão do PostgreSQL** (`pg_version`/`versao_pgsql`). Pega também DDL feito por DBA no psql.
+
+```bash
+php artisan pg-audit:ddl-log enable     # exige superusuário; senão imprime o SQL para o DBA rodar
+php artisan pg-audit:ddl-log status|disable|sql
+```
+Não registra objetos do schema de auditoria, temporários ou de extensões. Em bancos gerenciados que não permitem event trigger,
+use só a versão do esquema. Instalações antigas: `php artisan pg-audit:upgrade`.
+
+### Valores reais na query só em algumas tabelas (`withLiteralQueries`)
+`capture_query` grava a query como o PostgreSQL a recebe: com o PDO padrão, `update "orders" set "total" = $1 where "id" = $2`.
+Os valores reais só entram no texto com `ATTR_EMULATE_PREPARES` (ver acima). Em vez de ligar globalmente, ligue **só ao gravar em
+tabelas sem dados sensíveis**:
+
+```php
+PgAudit::withLiteralQueries(fn () => Order::find(1)->update(['status' => 'paid']));
+// log: update "orders" set "status" = 'paid', "updated_at" = '2026-10-12 22:00:00' where "id" = 1
+```
+O atributo é ligado só na conexão de escrita e restaurado ao fim (mesmo com exceção); fora do bloco o SQL segue parametrizado.
+Combine com `capture_query_tables` para que só as tabelas liberadas gravem a query. Atenção: com prepares emulados os valores aparecem
+também no log do servidor e no `pg_stat_activity`, e as colunas em `except` **não** são mascaradas no texto; por isso use só em tabelas sem senha/token.
+`pg-audit:status` avisa quando `capture_query` está ligado e o PDO emula prepares.
+
 ## O que foi alterado, com os valores reais
 
 O texto gravado por `capture_query` vem parametrizado (`update "orders" set "status" = $1 where "id" = $2`): o PostgreSQL recebe o SQL
