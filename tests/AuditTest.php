@@ -599,6 +599,146 @@ class AuditTest extends TestCase
         Schema::dropIfExists('pais');
     }
 
+    public function test_restore_update_refuses_to_overwrite_later_changes_unless_overwrite(): void
+    {
+        $id = DB::table('posts')->insertGetId(['title' => 'a']);
+        DB::table('posts')->where('id', $id)->update(['title' => 'b']);
+        $first = AuditLog::action('U')->latest('id')->first();
+        DB::table('posts')->where('id', $id)->update(['title' => 'c']);       // alteração posterior
+
+        $dry = $first->restore(dryRun: true);
+        $this->assertSame(['title' => ['current' => 'c', 'logged' => 'b']], $dry['conflicts']);
+
+        try {
+            $first->restore();
+            $this->fail('deveria recusar: a linha mudou depois');
+        } catch (\LogicException $e) {
+            $this->assertStringContainsString('foi alterada depois', $e->getMessage());
+        }
+        $this->assertSame('c', DB::table('posts')->find($id)->title);          // nada foi sobrescrito
+
+        $first->restore(overwrite: true);
+        $this->assertSame('a', DB::table('posts')->find($id)->title);
+    }
+
+    public function test_restore_update_fails_when_the_row_no_longer_exists(): void
+    {
+        $id = DB::table('posts')->insertGetId(['title' => 'a']);
+        DB::table('posts')->where('id', $id)->update(['title' => 'b']);
+        $update = AuditLog::action('U')->latest('id')->first();
+        DB::table('posts')->where('id', $id)->delete();
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('Nenhuma linha');
+        $update->restore();
+    }
+
+    public function test_restore_handles_postgres_array_and_jsonb_columns(): void
+    {
+        Schema::dropIfExists('docs');
+        DB::statement('create table docs (id serial primary key, tags text[], nums int[], meta jsonb, flag boolean)');
+        PgAudit::enable('docs');
+
+        $id = DB::table('docs')->insertGetId([
+            'tags' => '{"a b","c,d"}', 'nums' => '{1,2,3}', 'meta' => '{"k": [1, 2], "o": {"x": null}}', 'flag' => true,
+        ]);
+        DB::table('docs')->where('id', $id)->delete();
+
+        AuditLog::deletions()->latest('id')->first()->restore();
+
+        $row = DB::selectOne('select tags::text as tags, nums::text as nums, meta::text as meta, flag from docs where id = ?', [$id]);
+        $this->assertSame('{"a b","c,d"}', $row->tags);
+        $this->assertSame('{1,2,3}', $row->nums);
+        $this->assertEquals(['k' => [1, 2], 'o' => ['x' => null]], json_decode($row->meta, true));
+        $this->assertTrue($row->flag);
+
+        Schema::dropIfExists('docs');
+    }
+
+    public function test_deleted_and_restore_see_logs_in_other_schemas_and_prefixed_tables(): void
+    {
+        AuditSchema::up(null, 'audit_vendas');
+        Schema::dropIfExists('vitems');
+        Schema::dropIfExists('vorders');
+        Schema::create('vorders', function (Blueprint $t) {
+            $t->id();
+            $t->string('status');
+            $t->audit(schema: 'audit_vendas', prefix: 'audit_');
+        });
+        Schema::create('vitems', function (Blueprint $t) {
+            $t->id();
+            $t->foreignId('vorder_id')->constrained('vorders')->cascadeOnDelete();
+            $t->string('sku');
+            $t->audit(schema: 'audit_vendas', prefix: 'audit_');
+        });
+
+        $order = DB::table('vorders')->insertGetId(['status' => 'novo']);
+        DB::table('vitems')->insert(['vorder_id' => $order, 'sku' => 'X1']);
+        $post = DB::table('posts')->insertGetId(['title' => 'junto']);
+
+        DB::transaction(function () use ($order, $post) {                      // cascata + tabela com log padrão
+            DB::table('vorders')->where('id', $order)->delete();
+            DB::table('posts')->where('id', $post)->delete();
+        });
+
+        // as 3 linhas apagadas estão em 3 tabelas de log diferentes
+        $this->artisan('pg-audit:deleted')->expectsOutputToContain('audit_vendas.audit_vorders')->expectsOutputToContain('audit_vendas.audit_vitems')->assertSuccessful();
+
+        $tx = AuditLog::inSchema('audit_vendas', null, 'audit_vorders')->where('event', 'D')->first()->transaction_id;
+        $this->artisan('pg-audit:restore', ['--transaction' => $tx, '--force' => true])->assertSuccessful();
+
+        $this->assertSame('novo', DB::table('vorders')->find($order)->status);
+        $this->assertSame('X1', DB::table('vitems')->where('vorder_id', $order)->value('sku'));
+        $this->assertSame('junto', DB::table('posts')->find($post)->title);
+
+        Schema::dropIfExists('vitems');
+        Schema::dropIfExists('vorders');
+        AuditSchema::down(null, 'audit_vendas');
+    }
+
+    public function test_restore_by_id_is_ambiguous_across_log_tables_until_log_is_given(): void
+    {
+        AuditSchema::up(null, 'audit_vendas');
+        Schema::dropIfExists('vorders');
+        Schema::create('vorders', function (Blueprint $t) {
+            $t->id();
+            $t->string('status');
+            $t->audit(schema: 'audit_vendas', prefix: 'audit_');
+        });
+
+        $o = DB::table('vorders')->insertGetId(['status' => 'x']);
+        $p = DB::table('posts')->insertGetId(['title' => 'y']);
+        DB::table('vorders')->where('id', $o)->delete();
+        DB::table('posts')->where('id', $p)->delete();
+        // o primeiro log de cada tabela tem id 1 (insert); o delete é o 2: existe nas duas tabelas de log
+        $this->assertSame(2, AuditLog::deletions()->first()->id);
+        $this->assertSame(2, AuditLog::inSchema('audit_vendas', null, 'audit_vorders')->where('event', 'D')->first()->id);
+
+        $this->artisan('pg-audit:restore', ['id' => 2, '--dry-run' => true])->expectsOutputToContain('mais de uma tabela de log')->assertFailed();
+        $this->artisan('pg-audit:restore', ['id' => 2, '--log' => 'audit_vendas.audit_vorders', '--dry-run' => true])->expectsOutputToContain('vorders')->assertSuccessful();
+
+        Schema::dropIfExists('vorders');
+        AuditSchema::down(null, 'audit_vendas');
+    }
+
+    public function test_upgrade_can_generate_a_migration_instead_of_touching_the_database(): void
+    {
+        $dir = database_path('migrations');
+        $before = glob($dir.'/*') ?: [];
+
+        $this->artisan('pg-audit:upgrade', ['--migration' => true, '--schema' => 'audit'])->assertSuccessful();
+
+        $files = array_values(array_diff(glob($dir.'/*') ?: [], $before));
+        $this->assertCount(1, $files);
+        $code = file_get_contents($files[0]);
+        $this->assertStringContainsString("AuditSchema::refreshFunction(schema: 'audit')", $code);
+
+        $migration = require $files[0];       // executa de verdade
+        $migration->up();
+        $migration->down();
+        unlink($files[0]);
+    }
+
     public function test_deleted_and_restore_commands(): void
     {
         $id = DB::table('posts')->insertGetId(['title' => 'apagado sem querer']);

@@ -17,8 +17,11 @@ class Restorer
     /**
      * Restaura uma linha de log. Retorna ['sql' => ..., 'skipped_columns' => [...], 'done' => bool].
      * Com $dryRun não grava nada.
+     *
+     * UPDATE: só desfaz se a linha ainda estiver como o log a deixou (new_values). Se foi alterada depois, lança
+     * LogicException (no dry-run devolve em 'conflicts'); $overwrite = true sobrescreve mesmo assim.
      */
-    public function restoreRow(AuditLog $log, array $set = [], bool $dryRun = false): array
+    public function restoreRow(AuditLog $log, array $set = [], bool $dryRun = false, bool $overwrite = false): array
     {
         $event = $log->{Columns::get('event')};
         if (! in_array($event, ['D', 'U'], true)) {
@@ -34,26 +37,34 @@ class Restorer
         $old = $log->{Columns::get('old_values')} ?? [];
         $set = $this->setFor($set, $table);
 
-        $existing = $this->columns($db, $schema, $table);
+        $types = $this->columns($db, $schema, $table);
         $data = array_merge($old, $set);
-        $skipped = array_values(array_diff(array_keys($data), $existing));
-        $data = array_intersect_key($data, array_flip($existing));
-        $data = array_map(fn ($v) => is_array($v) ? json_encode($v, JSON_UNESCAPED_UNICODE) : $v, $data);
+        $skipped = array_values(array_diff(array_keys($data), array_keys($types)));
+        $data = array_intersect_key($data, $types);
+        $data = array_map(fn ($v, $c) => $this->encode($v, $types[$c]), $data, array_keys($data));
+        $data = array_combine(array_keys(array_intersect_key(array_merge($old, $set), $types)), $data);
 
-        $sql = $this->sql($event, $qualified, $data, $this->where($db, $log, $schema, $table));
+        $pk = $this->where($db, $log, $schema, $table);
+        $sql = $this->sql($event, $qualified, $data, $pk);
+        $conflicts = $event === 'U' ? $this->conflicts($db, $log, $qualified, $pk) : [];
 
         if ($dryRun) {
-            return ['sql' => $sql, 'skipped_columns' => $skipped, 'done' => false];
+            return ['sql' => $sql, 'skipped_columns' => $skipped, 'conflicts' => $conflicts, 'done' => false];
+        }
+
+        if ($conflicts && ! $overwrite) {
+            $what = implode('; ', array_map(fn ($c, $v) => "{$c}: atual ".json_encode($v['current'], JSON_UNESCAPED_UNICODE).', no log '.json_encode($v['logged'], JSON_UNESCAPED_UNICODE), array_keys($conflicts), $conflicts));
+
+            throw new LogicException("A linha foi alterada depois deste update ({$what}). Use --overwrite para desfazer mesmo assim.");
         }
 
         if ($event === 'D') {
             $db->table($qualified)->insert($data);
-        } else {
-            $pk = $this->where($db, $log, $schema, $table);
-            $db->table($qualified)->where($pk)->update($data);
+        } elseif ($db->table($qualified)->where($pk)->update($data) !== 1) {
+            throw new LogicException("Nenhuma linha de {$qualified} com a chave ".json_encode($pk).' (apagada depois?). Restaure o DELETE primeiro.');
         }
 
-        return ['sql' => $sql, 'skipped_columns' => $skipped, 'done' => true];
+        return ['sql' => $sql, 'skipped_columns' => $skipped, 'conflicts' => $conflicts, 'done' => true];
     }
 
     /**
@@ -62,26 +73,29 @@ class Restorer
      *
      * @return array<int, array> resultado por linha de log
      */
-    public function restoreTransaction(int|string $transactionId, array $set = [], bool $dryRun = false, ?string $table = null, ?string $connection = null): array
+    public function restoreTransaction(int|string $transactionId, array $set = [], bool $dryRun = false, ?string $table = null, ?string $connection = null, ?string $log = null, bool $overwrite = false): array
     {
-        $logs = AuditLog::inSchema(config('pg-audit.schema'), $connection)
-            ->where(Columns::get('transaction_id'), $transactionId)
-            ->where(Columns::get('event'), 'D')
-            ->when($table, fn ($q) => $q->where(Columns::get('table'), $table))
-            ->orderBy('id')
-            ->get();
+        // a transação pode ter apagado em tabelas com logs diferentes (padrão, schema próprio, prefixo): junta todas
+        $logs = collect(LogSources::resolve($log, $connection))
+            ->flatMap(fn ($source) => LogSources::query($source, $connection)
+                ->where(Columns::get('transaction_id'), $transactionId)
+                ->where(Columns::get('event'), 'D')
+                ->when($table, fn ($q) => $q->where(Columns::get('table'), $table))
+                ->orderBy('id')->get())
+            ->sortBy(fn ($l) => [$l->{Columns::get('created_at')}?->getTimestampMs(), $l->id])
+            ->values();
 
         if ($logs->isEmpty()) {
             throw new LogicException("Nenhum DELETE encontrado na transação {$transactionId}.");
         }
 
         if ($dryRun) {
-            return $logs->map(fn ($l) => ['log_id' => $l->id] + $this->restoreRow($l, $set, true))->all();
+            return $logs->map(fn ($l) => ['log_id' => $l->id] + $this->restoreRow($l, $set, true, $overwrite))->all();
         }
 
         $db = DB::connection($logs->first()->getConnectionName());
 
-        return $db->transaction(function () use ($logs, $set, $db) {
+        return $db->transaction(function () use ($logs, $set, $db, $overwrite) {
             $pending = $logs->all();
             $results = [];
 
@@ -92,7 +106,7 @@ class Restorer
                     try {
                         // savepoint por linha: uma violação de FK não aborta a transação inteira
                         $results[$log->id] = ['log_id' => $log->id] + $db->transaction(
-                            fn () => $this->restoreRow($log, $set)
+                            fn () => $this->restoreRow($log, $set, false, $overwrite)
                         );
                     } catch (Throwable $e) {
                         if (! $this->isForeignKeyViolation($e)) {
@@ -133,9 +147,61 @@ class Restorer
         return str_contains($e->getMessage(), 'SQLSTATE[23503]');
     }
 
+    /** @return array<string, string> coluna => tipo interno (udt_name; arrays começam com "_") */
     protected function columns(Connection $db, string $schema, string $table): array
     {
-        return array_column($db->select('SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?', [$schema, $table]), 'column_name');
+        return array_column($db->select('SELECT column_name, udt_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?', [$schema, $table]), 'udt_name', 'column_name');
+    }
+
+    /** Valor do log -> valor gravável. json/jsonb viram texto JSON; arrays do PostgreSQL (text[], int[]...) viram literal {a,b}. */
+    protected function encode(mixed $value, string $udt): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        return str_starts_with($udt, '_') ? $this->pgArray($value) : json_encode($value, JSON_UNESCAPED_UNICODE);
+    }
+
+    protected function pgArray(array $items): string
+    {
+        return '{'.implode(',', array_map(fn ($v) => match (true) {
+            $v === null => 'NULL',
+            is_array($v) => $this->pgArray($v),
+            is_bool($v) => $v ? 'true' : 'false',
+            default => '"'.addcslashes((string) $v, '"\\').'"',
+        }, $items)).'}';
+    }
+
+    /**
+     * Colunas do new_values do log cujo valor atual na tabela é outro (a linha foi alterada depois).
+     * Compara via to_jsonb nos dois lados, então a formatação (datas, numeric) é a mesma do log.
+     *
+     * @return array<string, array{current: mixed, logged: mixed}>
+     */
+    protected function conflicts(Connection $db, AuditLog $log, string $qualified, array $pk): array
+    {
+        $logged = $log->{Columns::get('new_values')} ?? [];
+        if (! $logged) {
+            return [];
+        }
+
+        $g = $db->getQueryGrammar();
+        $where = implode(' and ', array_map(fn ($c) => $g->wrap($c).' = ?', array_keys($pk)));
+        $row = $db->selectOne('select to_jsonb(t) as j from '.$g->wrapTable($qualified).' t where '.$where, array_values($pk));
+        if (! $row) {
+            return [];      // a linha não existe: o update acusa isso com mensagem própria
+        }
+
+        $current = json_decode($row->j, true);
+        $out = [];
+        foreach ($logged as $column => $value) {
+            if (! array_key_exists($column, $current) || $current[$column] != $value) {
+                $out[$column] = ['current' => $current[$column] ?? null, 'logged' => $value];
+            }
+        }
+
+        return $out;
     }
 
     /** Chave primária da linha: ['id' => '5'] (ou composta), na ordem em que o trigger montou o row_id. */

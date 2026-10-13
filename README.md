@@ -53,6 +53,11 @@ No modo `transaction` (PgBouncer) a pausa só vale dentro de transação: `witho
 fora de transação lança exceção.
 
 > **Instalações anteriores à pausa:** rode `php artisan pg-audit:upgrade` (recria a função do trigger e amplia a constraint de eventos). Os triggers existentes não mudam.
+>
+> **Atualizando o pacote:** `pg-audit:upgrade` altera o banco na hora. Prefira `php artisan pg-audit:upgrade --migration`, que gera uma
+> migration (`AuditSchema::refreshFunction()`): assim `migrate:fresh` e ambientes novos ficam iguais ao seu. A migration de instalação
+> chama o código do pacote instalado, então recria sempre a função da versão que está no `vendor/`; a de upgrade só é necessária
+> em bancos que já existiam antes da atualização.
 
 ## Gravar o SQL (`capture_query`)
 
@@ -88,6 +93,10 @@ statements nesse modo (o PgBouncer 1.21+ suporta, com `max_prepared_statements` 
 confira o conteúdo do log antes de ligar `capture_query` e restrinja `capture_query_tables` às tabelas sem dados pessoais.
 
 Para saber **o que mudou**, use `old_values`/`new_values`; use `capture_query` só quando precisar da forma do SQL.
+
+Se precisar dos valores reais no texto, não ligue o PDO globalmente: use as opções controladas em
+[Valores reais na query só em algumas tabelas](#valores-reais-na-query-só-em-algumas-tabelas) (`literal_query_tables`,
+`WithLiteralQueries`, `withLiteralQueries()`), que ligam os prepares emulados só nas tabelas sem dados sensíveis.
 - `capture_query` cria a coluna: defina **antes** de instalar; em instalações antigas rode `pg-audit:upgrade`.
   `capture_query_tables` vale na hora de habilitar o trigger: rode `pg-audit:enable` de novo ao mudar a lista.
 
@@ -345,6 +354,13 @@ $log->restore(['password' => $hashNovo]);          // reinsere com o mesmo id e 
 - Se o esquema mudou desde o delete (coluna removida/renomeada), as colunas que não existem mais são ignoradas e listadas; compare com a
   `schema_version` da linha do log e com `schema_changes`. Coluna nova `NOT NULL` sem default precisa de `--set`.
 - `UPDATE` restaura só as colunas que mudaram; `INSERT` não se restaura (apague a linha); `TRUNCATE` não é restaurável por aqui.
+- **Desfazer um update não pisa em alterações posteriores:** se a linha mudou depois (ex.: `title` virou `b` no log mas hoje é `c`), o restore
+  **recusa** e mostra a coluna (`--dry-run` lista como "Alterada depois do log"). `--overwrite` (ou `restore(overwrite: true)`) desfaz mesmo assim.
+  Se a linha já não existe, falha (restaure o DELETE antes) em vez de dizer "restaurado".
+- **Vários logs:** `pg-audit:deleted` e `pg-audit:restore` procuram em **todas** as tabelas de log (a padrão, as de outros schemas e as por
+  prefixo, ex.: `audit_vendas.audit_orders`); `--transaction` junta as tabelas da cascata mesmo com logs diferentes. O `id` do log só é único dentro
+  de uma tabela de log: se existir em mais de uma, informe `--log=schema.tabela`.
+- Colunas `text[]`/`int[]` voltam como arrays do PostgreSQL e `json`/`jsonb` como JSON. Chave primária composta cujo valor contém vírgula não é suportada.
 
 ## O que foi alterado, com os valores reais
 
