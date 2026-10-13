@@ -303,7 +303,7 @@ class AuditSchema
      * Permissões mínimas para o role do app: só INSERT nas tabelas de log (nunca UPDATE/DELETE/TRUNCATE).
      * Os triggers rodam como o role que grava, então ele precisa disso para auditar. $read adiciona SELECT
      * (para a tela de histórico, pg-audit:deleted/restore). Vale para tabelas futuras do schema (default privileges).
-     * Rode como o dono do schema de auditoria. Se o role for o próprio dono, REVOKE não tem efeito: use um role separado.
+     * Rode como o dono do schema de auditoria. Se o role for o próprio dono, as tabelas dele não são alteradas (REVOKE tiraria os privilégios do dono): use um role separado.
      *
      * @return array<int, string> avisos
      */
@@ -328,7 +328,11 @@ class AuditSchema
         foreach ($logTables as $table) {
             $t = "{$s}.".self::q($table);
             if (($owners[$table] ?? null) === $role) {
-                $warnings[] = "{$role} é o dono de {$schemaName}.{$table}: o dono sempre pode UPDATE/DELETE. Use um role separado.";
+                // O dono não ganha proteção com isto, e REVOKE no dono TIRARIA os privilégios dele (inclusive o DELETE do
+                // pg-audit:prune e o SELECT do restore). Nada é alterado nesta tabela.
+                $warnings[] = "{$role} é o dono de {$schemaName}.{$table}: o dono sempre pode UPDATE/DELETE (nada foi alterado nesta tabela). Use um role separado.";
+
+                continue;
             }
             $db->unprepared("REVOKE ALL ON TABLE {$t} FROM {$r}");
             $db->unprepared("GRANT INSERT ON TABLE {$t} TO {$r}");

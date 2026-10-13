@@ -967,6 +967,32 @@ class AuditTest extends TestCase
         Schema::dropIfExists('notas');
     }
 
+    public function test_grant_to_the_owner_role_warns_and_does_not_strip_the_owners_privileges(): void
+    {
+        $db = DB::connection();
+        $db->unprepared("DROP ROLE IF EXISTS pgaudit_owner_t");
+        $db->unprepared("CREATE ROLE pgaudit_owner_t");               // não é superusuário: respeita privilégios
+        try {
+            foreach (DB::select("select tablename from pg_tables where schemaname = 'audit'") as $t) {
+                $db->unprepared('ALTER TABLE audit."'.$t->tablename.'" OWNER TO pgaudit_owner_t');
+            }
+            $this->assertTrue((bool) DB::selectOne("select has_table_privilege('pgaudit_owner_t', 'audit.logged_actions', 'DELETE') as ok")->ok);
+
+            $warnings = AuditSchema::grantApp('pgaudit_owner_t', read: true);
+
+            $this->assertNotEmpty($warnings);
+            $this->assertStringContainsString('nada foi alterado', $warnings[0]);
+            foreach (['DELETE', 'UPDATE', 'SELECT', 'INSERT'] as $priv) {
+                $this->assertTrue((bool) DB::selectOne("select has_table_privilege('pgaudit_owner_t', 'audit.logged_actions', '{$priv}') as ok")->ok, "o dono perdeu {$priv}");
+            }
+        } finally {
+            AuditSchema::down();
+            $db->unprepared('DROP OWNED BY pgaudit_owner_t');
+            $db->unprepared('DROP ROLE pgaudit_owner_t');
+            AuditSchema::up();
+        }
+    }
+
     public function test_make_migration_generates_executable_schema_table_calls(): void
     {
         $dir = database_path('migrations');
