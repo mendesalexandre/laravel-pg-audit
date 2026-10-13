@@ -272,7 +272,28 @@ php artisan pg-audit:ddl-log status|disable|sql
 Não registra objetos do schema de auditoria, temporários ou de extensões. Em bancos gerenciados que não permitem event trigger,
 use só a versão do esquema. Instalações antigas: `php artisan pg-audit:upgrade`.
 
-### Valores reais na query só em algumas tabelas (`withLiteralQueries`)
+### Valores reais na query só em algumas tabelas
+
+**Pelo model (um trait, sem closure):**
+
+```php
+use MendesAlexandre\PgAudit\Concerns\HasAuditLog;
+use MendesAlexandre\PgAudit\Concerns\WithLiteralQueries;
+
+class Customer extends Model
+{
+    use HasAuditLog, WithLiteralQueries;
+}
+
+Customer::create(['name' => 'Ana']);          // insert into "customers" ("name") values ('Ana') returning "id"
+$customer->update(['cpf' => '123']);          // update "customers" set "cpf" = '123' where "id" = 1
+```
+Vale para `create/save/update/delete` do próprio model; não cobre `Customer::query()->update([...])` em massa nem `DB::table()`
+(use o closure abaixo). **Trava de segurança:** se a gravação inclui uma coluna de `global_except` (password, remember_token), do `$auditExcept`
+do model ou de `protected array $literalQueryExcept = [...]`, aquela gravação continua parametrizada.
+
+**Por bloco (qualquer código):**
+
 `capture_query` grava a query como o PostgreSQL a recebe: com o PDO padrão, `update "orders" set "total" = $1 where "id" = $2`.
 Os valores reais só entram no texto com `ATTR_EMULATE_PREPARES` (ver acima). Em vez de ligar globalmente, ligue **só ao gravar em
 tabelas sem dados sensíveis**:

@@ -614,6 +614,49 @@ class AuditTest extends TestCase
         $this->assertSame('99', AuditLog::action('I')->latest('id')->first()->user_id);   // quem restaurou fica registrado
     }
 
+    public function test_model_trait_embeds_values_without_wrapping_and_keeps_sensitive_writes_parameterized(): void
+    {
+        AuditSchema::down();
+        config(['pg-audit.capture_query' => true, 'pg-audit.query_max_length' => 300]);
+        AuditSchema::up();
+        Schema::dropIfExists('lit_items');
+        Schema::create('lit_items', function (Blueprint $t) {
+            $t->id();
+            $t->string('nome');
+            $t->string('senha')->nullable();
+            $t->audit(except: ['senha'], captureQuery: true);
+        });
+        $manager = app(AuditManager::class);
+
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \MendesAlexandre\PgAudit\Concerns\WithLiteralQueries;
+
+            protected $table = 'lit_items';
+            public $timestamps = false;
+            protected $guarded = [];
+            protected array $auditExcept = ['senha'];
+        };
+
+        $item = $model->newQuery()->create(['nome' => "O'Brien"]);
+        $item->update(['nome' => 'Novo nome']);
+        $this->assertFalse($manager->emulatesPrepares());                  // restaurado depois de cada gravação
+
+        $item->update(['nome' => 'Com senha', 'senha' => 'HASH-SECRETO']);   // inclui coluna sensível: continua parametrizado
+        $item->delete();
+
+        $q = AuditLog::forTable('lit_items')->orderBy('id')->pluck('query')->all();
+        $this->assertSame('insert into "lit_items" ("nome") values (\'O\'\'Brien\') returning "id"', $q[0]);
+        $this->assertSame('update "lit_items" set "nome" = \'Novo nome\' where "id" = 1', $q[1]);
+        $this->assertSame('update "lit_items" set "nome" = $1, "senha" = $2 where "id" = $3', $q[2]);
+        $this->assertSame('delete from "lit_items" where "id" = 1', $q[3]);
+        $this->assertStringNotContainsString('HASH-SECRETO', implode(' ', $q));
+
+        // fora do model (Query Builder), o PDO segue padrão
+        DB::table('lit_items')->insert(['nome' => 'qb']);
+        $this->assertStringContainsString('$1', AuditLog::forTable('lit_items')->orderByDesc('id')->first()->query);
+        Schema::dropIfExists('lit_items');
+    }
+
     public function test_make_migration_generates_executable_schema_table_calls(): void
     {
         $dir = database_path('migrations');
