@@ -309,6 +309,23 @@ class AuditTest extends TestCase
         $this->assertSame('http://octane/x', $log->url);
     }
 
+    public function test_log_exposes_readable_changes_and_sql_with_real_values(): void
+    {
+        $id = DB::table('posts')->insertGetId(['title' => "O'Brien"]);
+        DB::table('posts')->where('id', $id)->update(['title' => 'Novo título']);
+        DB::table('posts')->where('id', $id)->delete();
+
+        [$insert, $update, $delete] = AuditLog::orderBy('id')->get()->all();
+
+        $this->assertSame([['column' => 'title', 'before' => "O'Brien", 'after' => 'Novo título']], $update->diff);
+        $this->assertSame("update \"posts\" set \"title\" = 'Novo título' where \"id\" = '{$id}'", $update->readable_sql);
+        $this->assertStringContainsString("values (", $insert->readable_sql);
+        $this->assertStringContainsString("'O''Brien'", $insert->readable_sql);     // aspas escapadas
+        $this->assertSame("delete from \"posts\" where \"id\" = '{$id}'", $delete->readable_sql);
+        $this->assertSame("posts#{$id} U: title: \"O'Brien\" -> \"Novo título\"", $update->summary);
+        $this->assertStringNotContainsString('$1', $update->readable_sql);
+    }
+
     public function test_make_migration_generates_executable_schema_table_calls(): void
     {
         $dir = database_path('migrations');

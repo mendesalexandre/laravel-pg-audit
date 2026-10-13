@@ -246,6 +246,22 @@ PgAudit::actingAs($userId, fn () => $order->update([...]));
 - **Custo:** o middleware faz 1 ida ao banco ao entrar e 1 ao sair. Se seus `GET` nunca gravam, `'skip_methods' => ['GET', 'HEAD', 'OPTIONS']` elimina isso.
 - **IP atrás de proxy (nginx/HAProxy):** configure `TrustProxies` no app, senão o IP gravado é o do proxy.
 
+## O que foi alterado, com os valores reais
+
+O texto gravado por `capture_query` vem parametrizado (`update "orders" set "status" = $1 where "id" = $2`): o PostgreSQL recebe o SQL
+e os valores separados. Para ler **o que mudou**, use os dados do próprio log (que respeitam `except`), sem mexer no PDO:
+
+```php
+$log = AuditLog::forRecord('customers', 1)->latest('id')->first();
+
+$log->diff;          // [['column' => 'lab_cpf', 'before' => '000...', 'after' => '111...']]  (insert: before = null; delete: after = null)
+$log->readable_sql;  // update "customers" set "lab_cpf" = '111.222.333-44' where "id" = '1'
+$log->summary;       // customers#1 U: lab_cpf: "000..." -> "111..."
+```
+
+`readable_sql` é para **leitura** (relatório, tela de histórico), montado de `old_values`/`new_values`; não execute. A coluna da chave é
+`pg-audit.primary_key` (padrão `id`). Em `update`, `diff` e `readable_sql` trazem só as colunas que mudaram.
+
 ## Consultando
 
 ```php

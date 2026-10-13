@@ -58,6 +58,9 @@ return [
     // Dias de retenção para pg-audit:prune (null = nunca apaga).
     'retention_days' => null,
 
+    // Coluna da chave primária usada no SQL legível (AuditLog::readable_sql) de update/delete.
+    'primary_key' => 'id',
+
     // Model de usuário para AuditLog::user().
     'user_model' => env('PG_AUDIT_USER_MODEL', 'App\\Models\\User'),
 
