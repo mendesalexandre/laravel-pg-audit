@@ -2,12 +2,17 @@
 
 namespace MendesAlexandre\PgAudit;
 
+use Illuminate\Database\Events\MigrationEnded;
+use Illuminate\Database\Events\MigrationsEnded;
+use Illuminate\Database\Events\MigrationStarted;
 use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Database\Schema\Grammars\PostgresGrammar;
 use Illuminate\Support\Fluent;
 use Illuminate\Support\ServiceProvider;
+use MendesAlexandre\PgAudit\Console\DdlLogCommand;
 use MendesAlexandre\PgAudit\Console\DisableCommand;
 use MendesAlexandre\PgAudit\Console\EnableCommand;
 use MendesAlexandre\PgAudit\Console\InstallCommand;
@@ -17,6 +22,7 @@ use MendesAlexandre\PgAudit\Console\RenameColumnsCommand;
 use MendesAlexandre\PgAudit\Console\StatusCommand;
 use MendesAlexandre\PgAudit\Console\SyncCommand;
 use MendesAlexandre\PgAudit\Console\UpgradeCommand;
+use MendesAlexandre\PgAudit\Console\VersionCommand;
 
 class PgAuditServiceProvider extends ServiceProvider
 {
@@ -33,14 +39,45 @@ class PgAuditServiceProvider extends ServiceProvider
 
         Event::listen(TransactionBeginning::class, fn (TransactionBeginning $e) => app(AuditManager::class)->applyStored($e->connection));
 
+        $this->registerMigrationListeners();
+
         if ($this->app->runningInConsole()) {
-            $this->commands([UpgradeCommand::class, RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
+            $this->commands([VersionCommand::class, DdlLogCommand::class, UpgradeCommand::class, RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
 
             $this->publishes([__DIR__.'/../config/pg-audit.php' => config_path('pg-audit.php')], 'pg-audit-config');
             $this->publishes([
                 __DIR__.'/../database/migrations/create_pg_audit_schema.php.stub' => database_path('migrations/'.date('Y_m_d_His').'_create_pg_audit_schema.php'),
             ], 'pg-audit-migrations');
         }
+    }
+
+    /**
+     * Durante o `migrate`: identifica a migration em andamento (para o histórico de DDL) e, ao fim, grava a versão do esquema.
+     * Nunca quebra a migration: falhas aqui só são reportadas.
+     */
+    protected function registerMigrationListeners(): void
+    {
+        $safe = function (callable $fn) {
+            try {
+                if (DB::connection(config('pg-audit.connection'))->getDriverName() === 'pgsql') {
+                    $fn(app(AuditManager::class));
+                }
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        };
+
+        Event::listen(MigrationStarted::class, fn (MigrationStarted $e) => $safe(fn ($m) => $m->setMigration(AuditManager::migrationName($e->migration))));
+        Event::listen(MigrationEnded::class, fn () => $safe(fn ($m) => $m->setMigration(null)));
+        Event::listen(MigrationsEnded::class, function () use ($safe) {
+            if (config('pg-audit.capture_schema_version', true)) {
+                $safe(function ($m) {
+                    if ($m->schemaState() !== null) {
+                        $m->recordSchemaVersion();
+                    }
+                });
+            }
+        });
     }
 
     /**

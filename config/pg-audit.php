@@ -55,6 +55,19 @@ return [
     // Registrar TRUNCATE por padrão ao habilitar auditoria.
     'truncate' => true,
 
+    // Versão do esquema gravada em cada linha de auditoria (coluna schema_version / versao_schema).
+    // Fica numa tabela de estado de 1 linha (audit.schema_state) que o trigger consulta; por isso vale também para
+    // alterações feitas fora do app (psql, outros sistemas). O pg-audit grava sozinho ao fim do `migrate` (desligue a coluna com 'capture_schema_version' => false):
+    //  - null: nome da última migration aplicada;  - string: valor fixo (ex.: env('PG_AUDIT_SCHEMA_VERSION'), SHA do deploy).
+    // Também dá para definir no deploy: php artisan pg-audit:version <valor>
+    'capture_schema_version' => true,
+    'schema_version' => env('PG_AUDIT_SCHEMA_VERSION'),
+
+    // Tabela do histórico de DDL (ALTER/CREATE/DROP) alimentado por EVENT TRIGGER (php artisan pg-audit:ddl-log enable).
+    // Exige superusuário para criar o event trigger. 'ddl_columns' sobrescreve nomes (chaves em Columns::DDL_PRESETS).
+    'ddl_table' => 'schema_changes',
+    'ddl_columns' => [],
+
     // Dias de retenção para pg-audit:prune (null = nunca apaga).
     'retention_days' => null,
 

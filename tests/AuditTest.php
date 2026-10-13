@@ -326,6 +326,151 @@ class AuditTest extends TestCase
         $this->assertStringNotContainsString('$1', $update->readable_sql);
     }
 
+    public function test_schema_version_is_stored_in_each_log_row_for_any_writer(): void
+    {
+        $manager = app(AuditManager::class);
+        $manager->recordSchemaVersion('v1');
+        DB::table('posts')->insert(['title' => 'a']);
+        $manager->recordSchemaVersion('v2');
+        DB::table('posts')->insert(['title' => 'b']);
+
+        $this->assertSame(['v1', 'v2'], AuditLog::orderBy('id')->pluck('schema_version')->all());
+        $this->assertSame('v2', $manager->schemaState()->version);
+        $this->assertNotEmpty($manager->schemaState()->pg_version);
+    }
+
+    public function test_schema_version_uses_config_value_when_not_given(): void
+    {
+        config(['pg-audit.schema_version' => 'deploy-abc123']);
+        $this->assertSame('deploy-abc123', app(AuditManager::class)->recordSchemaVersion());
+    }
+
+    public function test_migration_name_is_extracted_from_anonymous_migration_class(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'm').'.php';
+        $dir = sys_get_temp_dir().'/mig'.uniqid();
+        mkdir($dir);
+        $file = $dir.'/2026_10_12_120000_add_cpf_to_users.php';
+        file_put_contents($file, '<?php return new class { };');
+        $migration = require $file;
+
+        $this->assertSame('2026_10_12_120000_add_cpf_to_users', AuditManager::migrationName($migration));
+        unlink($file);
+        rmdir($dir);
+    }
+
+    public function test_ddl_log_records_alter_and_drop_with_query_migration_and_versions(): void
+    {
+        AuditSchema::enableDdlLog();
+        $this->assertTrue(AuditSchema::ddlLogEnabled());
+
+        try {
+            $manager = app(AuditManager::class);
+            $manager->recordSchemaVersion('v7');
+            $manager->setMigration('2026_10_12_120000_add_cpf');
+            PgAudit::setContext(['user_id' => '8']);
+
+            Schema::table('posts', fn (Blueprint $t) => $t->string('cpf')->nullable());
+            Schema::table('posts', fn (Blueprint $t) => $t->dropColumn('cpf'));
+            Schema::create('ddl_tmp', fn (Blueprint $t) => $t->id());
+            Schema::drop('ddl_tmp');
+
+            $rows = DB::table('audit.schema_changes')->orderBy('id')->get();
+            $tags = $rows->pluck('command_tag')->all();
+            $this->assertContains('ALTER TABLE', $tags);
+            $this->assertContains('CREATE TABLE', $tags);
+            $this->assertContains('DROP TABLE', $tags);
+
+            $alter = $rows->firstWhere('command_tag', 'ALTER TABLE');
+            $this->assertSame('public.posts', $alter->object_identity);
+            $this->assertStringContainsStringIgnoringCase('add column', $alter->query);
+            $this->assertSame('2026_10_12_120000_add_cpf', $alter->migration);
+            $this->assertSame('v7', $alter->schema_version);
+            $this->assertSame('8', $alter->user_id);
+            $this->assertNotEmpty($alter->pg_version);
+            $this->assertNotNull($rows->first(fn ($r) => $r->command_tag === 'ALTER TABLE' && str_contains($r->query, 'drop column')));
+
+            // nada do próprio schema de auditoria entra no histórico
+            $this->assertCount(0, $rows->where('schema_name', 'audit'));
+        } finally {
+            AuditSchema::disableDdlLog();
+            Schema::dropIfExists('ddl_tmp');
+        }
+
+        $this->assertFalse(AuditSchema::ddlLogEnabled());
+    }
+
+    public function test_upgrade_adds_schema_version_column_and_state_table_to_old_installation(): void
+    {
+        // simula instalação antiga: sem a coluna schema_version e sem a tabela de estado
+        DB::unprepared('ALTER TABLE audit.logged_actions DROP COLUMN schema_version');
+        DB::unprepared('DROP TABLE audit.schema_state');
+
+        AuditSchema::refreshFunction();
+        app(AuditManager::class)->recordSchemaVersion('depois-do-upgrade');
+        DB::table('posts')->insert(['title' => 'x']);
+
+        $this->assertSame('depois-do-upgrade', AuditLog::first()->schema_version);
+    }
+
+    public function test_ddl_table_and_columns_follow_locale(): void
+    {
+        config(['pg-audit.locale' => 'pt_BR']);
+        $cols = \MendesAlexandre\PgAudit\Support\Columns::ddl();
+        $this->assertSame('versao_pgsql', $cols['pg_version']);
+        $this->assertSame('executado_em', $cols['executed_at']);
+        $this->assertSame('versao_schema', \MendesAlexandre\PgAudit\Support\Columns::get('schema_version'));
+    }
+
+    public function test_with_literal_queries_embeds_values_only_inside_the_callback(): void
+    {
+        AuditSchema::down();
+        config(['pg-audit.capture_query' => true, 'pg-audit.capture_query_tables' => [], 'pg-audit.query_max_length' => 300]);
+        AuditSchema::up();
+        Schema::dropIfExists('posts');
+        Schema::create('posts', fn (Blueprint $t) => tap($t, function ($t) {
+            $t->id();
+            $t->string('title');
+            $t->audit();
+        }));
+        $manager = app(AuditManager::class);
+        $this->assertFalse($manager->emulatesPrepares());
+
+        $manager->withLiteralQueries(function () use ($manager) {
+            $this->assertTrue($manager->emulatesPrepares());
+            DB::table('posts')->insert(['title' => "O'Brien"]);
+        });
+        DB::table('posts')->insert(['title' => 'segredo']);          // fora do bloco: parametrizado
+        $this->assertFalse($manager->emulatesPrepares());              // restaurado
+
+        [$dentro, $fora] = AuditLog::orderBy('id')->pluck('query')->all();
+        $this->assertSame('insert into "posts" ("title") values (\'O\'\'Brien\')', $dentro);
+        $this->assertSame('insert into "posts" ("title") values ($1)', $fora);
+        $this->assertStringNotContainsString('segredo', $fora);
+    }
+
+    public function test_status_warns_when_capture_query_meets_emulated_prepares(): void
+    {
+        AuditSchema::down();
+        config(['pg-audit.capture_query' => true]);
+        AuditSchema::up();
+        Schema::dropIfExists('posts');
+        Schema::create('posts', fn (Blueprint $t) => tap($t, function ($t) {
+            $t->id();
+            $t->string('title');
+            $t->audit(except: ['title'], captureQuery: true);
+        }));
+
+        $this->artisan('pg-audit:status')->doesntExpectOutputToContain('ATTR_EMULATE_PREPARES')->assertSuccessful();
+
+        app(AuditManager::class)->withLiteralQueries(function () {
+            $this->artisan('pg-audit:status')
+                ->expectsOutputToContain('ATTR_EMULATE_PREPARES está ligado')
+                ->expectsOutputToContain('public.posts')
+                ->assertSuccessful();
+        });
+    }
+
     public function test_make_migration_generates_executable_schema_table_calls(): void
     {
         $dir = database_path('migrations');

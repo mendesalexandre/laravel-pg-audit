@@ -24,6 +24,7 @@ class Columns
             'user_agent' => 'user_agent',
             'url' => 'url',
             'db_version' => 'db_version',
+            'schema_version' => 'schema_version',
             'query' => 'query',
             'db_user' => 'db_user',
             'transaction_id' => 'transaction_id',
@@ -42,12 +43,66 @@ class Columns
             'user_agent' => 'navegador',
             'url' => 'url',
             'db_version' => 'versao_banco',
+            'schema_version' => 'versao_schema',
             'query' => 'consulta',
             'db_user' => 'usuario_banco',
             'transaction_id' => 'transacao_id',
             'created_at' => 'criado_em',
         ],
     ];
+
+    /** Colunas da tabela de DDL (schema_changes), com os mesmos presets de idioma. */
+    public const DDL_PRESETS = [
+        'en' => [
+            'id' => 'id',
+            'executed_at' => 'executed_at',
+            'db_user' => 'db_user',
+            'user_id' => 'user_id',
+            'command' => 'command_tag',
+            'object_type' => 'object_type',
+            'object' => 'object_identity',
+            'schema' => 'schema_name',
+            'query' => 'query',
+            'migration' => 'migration',
+            'schema_version' => 'schema_version',
+            'pg_version' => 'pg_version',
+        ],
+        'pt_BR' => [
+            'id' => 'id',
+            'executed_at' => 'executado_em',
+            'db_user' => 'usuario_banco',
+            'user_id' => 'usuario_id',
+            'command' => 'comando',
+            'object_type' => 'tipo_objeto',
+            'object' => 'objeto',
+            'schema' => 'schema_objeto',
+            'query' => 'consulta',
+            'migration' => 'migration',
+            'schema_version' => 'versao_schema',
+            'pg_version' => 'versao_pgsql',
+        ],
+    ];
+
+    /** Nomes das colunas da tabela de DDL (preset do locale + config "ddl_columns"). */
+    public static function ddl(): array
+    {
+        $locale = config('pg-audit.locale', 'en');
+        $columns = array_merge(
+            self::DDL_PRESETS[$locale] ?? throw new InvalidArgumentException("Preset de colunas desconhecido: {$locale}"),
+            config('pg-audit.ddl_columns', [])
+        );
+
+        foreach ($columns as $key => $name) {
+            if (! array_key_exists($key, self::DDL_PRESETS['en'])) {
+                throw new InvalidArgumentException("Chave de coluna de DDL desconhecida: {$key}");
+            }
+            if (! preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $name)) {
+                throw new InvalidArgumentException("Nome de coluna inválido: {$name}");
+            }
+        }
+
+        return $columns;
+    }
 
     /** Nomes efetivos segundo a config atual (preset + overrides). */
     public static function all(): array
