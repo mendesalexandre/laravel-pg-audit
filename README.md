@@ -318,6 +318,11 @@ Combine com `capture_query_tables` para que só as tabelas liberadas gravem a qu
 também no log do servidor e no `pg_stat_activity`, e as colunas em `except` **não** são mascaradas no texto; por isso use só em tabelas sem senha/token.
 `pg-audit:status` avisa quando `capture_query` está ligado e o PDO emula prepares.
 
+**Integração opcional com [`mpyw/laravel-pdo-emulation-control`](https://github.com/mpyw/laravel-pdo-emulation-control):** se estiver instalado e o
+`Mpyw\LaravelPdoEmulationControl\ConnectionServiceProvider` registrado em `config/app.php` (o pacote dele não tem package discovery),
+`withLiteralQueries()` passa a usar o `DB::emulated()` dele, que cobre os PDOs de leitura **e** escrita, não força a conexão e restaura em blocos aninhados.
+Sem ele, o pacote usa a implementação própria (só a conexão de escrita). Nada muda para quem não instala.
+
 ## Restaurar um delete (ou desfazer um update)
 
 O `DELETE` grava a linha inteira em `old_values`, então dá para trazê-la de volta. O `UPDATE` grava os valores antigos das colunas que mudaram.

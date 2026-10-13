@@ -212,14 +212,23 @@ class AuditManager
     }
 
     /**
-     * Executa $callback com ATTR_EMULATE_PREPARES ligado só nesta conexão (e só na sessão de escrita), restaurando depois.
+     * Executa $callback com ATTR_EMULATE_PREPARES ligado só nesta conexão, restaurando depois (sem o pacote opcional
+     * mpyw/laravel-pdo-emulation-control, só na sessão de escrita).
      * Com prepares emulados o SQL gravado por capture_query leva os valores reais em vez de $1, $2. Use apenas ao gravar
      * em tabelas SEM dados sensíveis: os valores também aparecem no log do servidor e no pg_stat_activity, e as colunas
      * em `except` NÃO são mascaradas no texto da query.
      */
     public function withLiteralQueries(Closure $callback, ?string $connection = null): mixed
     {
-        $pdo = $this->connection($connection)->getPdo();
+        $db = $this->connection($connection);
+
+        // Se mpyw/laravel-pdo-emulation-control estiver instalado e registrado (ConnectionServiceProvider em config/app.php),
+        // usa-o: cobre os PDOs de leitura e escrita, não força a conexão e restaura mesmo em blocos aninhados.
+        if (method_exists($db, 'emulated')) {
+            return $db->emulated($callback);
+        }
+
+        $pdo = $db->getPdo();
         $previous = $pdo->getAttribute(\PDO::ATTR_EMULATE_PREPARES);
         $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
 

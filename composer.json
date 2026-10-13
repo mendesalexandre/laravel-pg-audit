@@ -1,7 +1,13 @@
 {
     "name": "mendesalexandre/laravel-pg-audit",
     "description": "Auditoria automática para Laravel usando triggers do PostgreSQL.",
-    "keywords": ["laravel", "postgresql", "audit", "trigger", "auditoria"],
+    "keywords": [
+        "laravel",
+        "postgresql",
+        "audit",
+        "trigger",
+        "auditoria"
+    ],
     "license": "MIT",
     "require": {
         "php": "^8.2",
@@ -10,21 +16,35 @@
     },
     "require-dev": {
         "orchestra/testbench": "^9.0|^10.0|^11.0",
-        "phpunit/phpunit": "^10.5|^11.0"
+        "phpunit/phpunit": "^10.5|^11.0",
+        "mpyw/laravel-pdo-emulation-control": "^2.1"
     },
     "autoload": {
-        "psr-4": { "MendesAlexandre\\PgAudit\\": "src/" }
+        "psr-4": {
+            "MendesAlexandre\\PgAudit\\": "src/"
+        }
     },
     "autoload-dev": {
-        "psr-4": { "MendesAlexandre\\PgAudit\\Tests\\": "tests/" }
+        "psr-4": {
+            "MendesAlexandre\\PgAudit\\Tests\\": "tests/"
+        }
     },
     "extra": {
         "laravel": {
-            "providers": ["MendesAlexandre\\PgAudit\\PgAuditServiceProvider"],
-            "aliases": { "PgAudit": "MendesAlexandre\\PgAudit\\Facades\\PgAudit" }
+            "providers": [
+                "MendesAlexandre\\PgAudit\\PgAuditServiceProvider"
+            ],
+            "aliases": {
+                "PgAudit": "MendesAlexandre\\PgAudit\\Facades\\PgAudit"
+            }
         }
     },
-    "scripts": { "test": "phpunit" },
+    "scripts": {
+        "test": "phpunit"
+    },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "suggest": {
+        "mpyw/laravel-pdo-emulation-control": "Opcional: PgAudit::withLiteralQueries() passa a usar DB::emulated() (cobre PDO de leitura e escrita, conexão preguiçosa, blocos aninhados). Registre o ConnectionServiceProvider dele em config/app.php (não tem package discovery)."
+    }
 }
