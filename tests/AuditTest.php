@@ -657,6 +657,58 @@ class AuditTest extends TestCase
         Schema::dropIfExists('lit_items');
     }
 
+    public function test_literal_query_tables_embed_values_for_db_facade_and_keep_sensitive_statements_parameterized(): void
+    {
+        AuditSchema::down();
+        config([
+            'pg-audit.capture_query' => true, 'pg-audit.query_max_length' => 300,
+            'pg-audit.literal_query_tables' => ['posts', 'contas'], 'pg-audit.literal_query_except' => ['senha'],
+        ]);
+        AuditSchema::up();
+        Schema::dropIfExists('posts');
+        Schema::create('posts', fn (Blueprint $t) => tap($t, function ($t) {
+            $t->id();
+            $t->string('title');
+            $t->timestamp('updated_at')->nullable();
+            $t->audit();
+        }));
+        Schema::dropIfExists('contas');
+        Schema::create('contas', function (Blueprint $t) {
+            $t->id();
+            $t->string('nome');
+            $t->string('senha')->nullable();
+            $t->audit(except: ['senha']);
+        });
+        Schema::dropIfExists('notas');
+        Schema::create('notas', function (Blueprint $t) {
+            $t->id();
+            $t->string('texto');
+            $t->audit();
+        });
+
+        $manager = app(AuditManager::class);
+        $manager->hookLiteralQueries(DB::connection());
+
+        DB::table('posts')->insert(['title' => "O'Brien"]);                          // tabela da lista, Query Builder
+        DB::table('posts')->where('id', 1)->update(['title' => 'Novo']);
+        DB::statement('update posts set title = ? where id = ?', ['Cru', 1]);        // SQL cru com bindings
+        DB::table('contas')->insert(['nome' => 'ana', 'senha' => 'SEGREDO']);        // cita coluna sensível
+        DB::table('notas')->insert(['texto' => 'x']);                                // tabela fora da lista
+        DB::table('posts')->where('id', 1)->first();                                 // SELECT volta ao padrão
+        $this->assertFalse($manager->emulatesPrepares());
+
+        $q = fn ($tabela) => AuditLog::forTable($tabela)->orderBy('id')->pluck('query')->all();
+        $this->assertSame('insert into "posts" ("title") values (\'O\'\'Brien\')', $q('posts')[0]);
+        $this->assertSame('update "posts" set "title" = \'Novo\' where "id" = 1', $q('posts')[1]);
+        $this->assertSame('update posts set title = \'Cru\' where id = 1', $q('posts')[2]);
+        $this->assertSame('insert into "contas" ("nome", "senha") values ($1, $2)', $q('contas')[0]);
+        $this->assertSame('insert into "notas" ("texto") values ($1)', $q('notas')[0]);
+        $this->assertStringNotContainsString('SEGREDO', implode(' ', array_merge($q('posts'), $q('contas'), $q('notas'))));
+
+        Schema::dropIfExists('contas');
+        Schema::dropIfExists('notas');
+    }
+
     public function test_make_migration_generates_executable_schema_table_calls(): void
     {
         $dir = database_path('migrations');

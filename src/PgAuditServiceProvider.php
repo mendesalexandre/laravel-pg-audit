@@ -42,6 +42,11 @@ class PgAuditServiceProvider extends ServiceProvider
         Event::listen(TransactionBeginning::class, fn (TransactionBeginning $e) => app(AuditManager::class)->applyStored($e->connection));
 
         $this->registerMigrationListeners();
+        $this->app->booted(function () {
+            if ($this->app->bound('db') && config('pg-audit.literal_query_tables')) {
+                app(AuditManager::class)->hookLiteralQueries(DB::connection(config('pg-audit.connection')));
+            }
+        });
 
         if ($this->app->runningInConsole()) {
             $this->commands([RestoreCommand::class, DeletedCommand::class, VersionCommand::class, DdlLogCommand::class, UpgradeCommand::class, RenameColumnsCommand::class, InstallCommand::class, MakeMigrationCommand::class, EnableCommand::class, DisableCommand::class, SyncCommand::class, StatusCommand::class, PruneCommand::class]);
