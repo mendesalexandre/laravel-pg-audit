@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+Documentação: instalação pelo Packagist (o pacote deixa de ser privado). Sem mudança de código.
+
 ## 0.1.0
 
 Primeira versão.

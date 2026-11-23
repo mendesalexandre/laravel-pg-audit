@@ -6,18 +6,10 @@ contexto de usuário/IP e integração com migrations.
 
 ## Instalação
 
-Pacote **privado** (sem Packagist): aponte o Composer para o repositório e fixe a versão pela tag.
-
-```json
-"repositories": [
-    { "type": "vcs", "url": "git@github.com:mendesalexandre/laravel-pg-audit.git" }
-]
-```
-
-O servidor/CI precisa de acesso de leitura ao repositório (deploy key ou token). Depois:
+Pelo Composer (Packagist):
 
 ```bash
-composer require mendesalexandre/laravel-pg-audit:^0.1
+composer require mendesalexandre/laravel-pg-audit
 php artisan vendor:publish --tag=pg-audit-migrations
 php artisan vendor:publish --tag=pg-audit-config   # opcional
 php artisan migrate
